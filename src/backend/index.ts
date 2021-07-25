@@ -16,7 +16,11 @@ const app: express.Application = express()
 const http = require('http').Server(app);
 const io = require("socket.io")(http, {
     pingInterval: 25 * 1000, // Heroku fails with "H15 Idle connection" if a socket is inactive for more than 55 seconds with
-    pingTimeout: 60 * 1000
+    pingTimeout: 60 * 1000,
+    cors: {
+        origin: "http://localhost:8080",
+        methods: ["GET", "POST"]
+    }
 });
 const tripcode = require('tripcode');
 const enforce = require('express-sslify');
@@ -130,6 +134,11 @@ io.on("connection", function (socket: any)
     {
         janusHandleSlots = roomStates[user.areaId][user.roomId].streams.map(() => null)
     }
+
+    socket.on("ping", function () {
+        console.log("pinged")
+        socket.emit("pong")
+    })
 
     socket.on("disconnect", function ()
     {
