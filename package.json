@@ -11,7 +11,7 @@
     "serve-fe": "vue-cli-service serve",
     "serve-be": "ts-node-dev --respawn src/backend/index.ts",
     "build": "vue-cli-service build && npx tsc",
-    "start": "TODO",
+    "start": "node backend-build/backend/index.js",
     "dev-remote-persistor": "cross-env PERSISTOR_URL=http://localhost:8086 PERSISTOR_SECRET=hello ts-node-dev --respawn index.ts",
     "start-persistor": "cross-env PERSISTOR_SECRET=hello node state-persistor.js",
     "deploy-prod": "git push origin master:CI-PROD",

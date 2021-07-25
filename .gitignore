@@ -1,5 +1,6 @@
 persisted-state
 local-settings.json
+backend-build
 
 .DS_Store
 node_modules

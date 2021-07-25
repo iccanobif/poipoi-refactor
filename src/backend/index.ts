@@ -966,7 +966,7 @@ app.get("/", async (req, res) =>
 
     try
     {
-        let data = await readFile("static/index.html", 'utf8')
+        let data = await readFile("dist/index.html", 'utf8')
 
         try {
             const { statusCode: loginFooterStatusCode, body: loginFooterBody } = await got(
@@ -1049,7 +1049,7 @@ app.get(/(.+)\.crisp\.svg$/i, async (req, res) =>
     }
 })
 
-app.use(express.static('static',
+app.use(express.static('dist',
     {
         setHeaders: (res, path) => {
             // Cache images for one week. I made the frontend append ?v=version to image URLs,

@@ -12,6 +12,7 @@
     "allowSyntheticDefaultImports": true,
     "sourceMap": true,
     "baseUrl": ".",
+    "outDir": "./backend-build", /* Redirect output structure to the directory. */
     "types": [
       "webpack-env"
     ],
