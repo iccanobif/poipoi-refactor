@@ -1,19 +1,17 @@
-# gikopoipoi-frontend
+https://gikopoipoi.net
 
-## Project setup
-```
-yarn install
-```
+to start server, run:
 
-### Compiles and hot-reloads for development
-```
-yarn serve
-```
+``$ yarn``
+``$ yarn build``
+``$ yarn start``
 
-### Compiles and minifies for production
-```
-yarn build
-```
+for local debugging:
+``$ yarn dev``
 
-### Customize configuration
-See [Configuration Reference](https://cli.vuejs.org/config/).
+to enable automatic version bump run:
+
+``$ git config core.hooksPath .githooks``
+
+Help on any task (non programming stuff too) is welcome, feel free to contact me!
+どんなお手伝いでも大歓迎です！気軽に連絡ください（日本語でもおｋ）
