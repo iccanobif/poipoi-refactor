@@ -34,6 +34,20 @@ export interface Door
     } | string | null;
 }
 
+export interface RoomObject
+{
+    x: number;
+    y: number;
+    url: string;
+    scale?: number;
+    offset?: {
+        x: number;
+        y: number;
+    }
+    xOffset?: number;
+    yOffset?: number;
+}
+
 export interface Room
 {
     id: string;
@@ -46,18 +60,7 @@ export interface Room
     spawnPoint: string;
     needsFixedCamera?: boolean;
     isBackgroundImageOffsetEdge?: boolean;
-    objects: {
-        x: number;
-        y: number;
-        url: string;
-        scale?: number;
-        offset?: {
-            x: number;
-            y: number;
-        }
-        xOffset?: number;
-        yOffset?: number;
-    }[];
+    objects: RoomObject[];
     sit: Coordinates[];
     blocked: Coordinates[];
     forbiddenMovements: { xFrom: number, yFrom: number, xTo: number, yTo: number }[],

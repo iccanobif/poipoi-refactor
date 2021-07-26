@@ -3,9 +3,23 @@
   <head>
     <meta charset="utf-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <meta name="viewport" content="width=device-width,initial-scale=1.0">
-    <link rel="icon" href="<%= BASE_URL %>favicon.ico">
-    <title><%= htmlWebpackPlugin.options.title %></title>
+    <meta name="abuseipdb-verification" content="DmbG28jg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+    
+    <!-- <link rel='stylesheet' href='style/main.css' />
+    <link rel='stylesheet' href='style/dark-mode.css' />
+    <link rel='stylesheet' href='chess/css/chessboard-1.0.0.min.css' />
+    <link href="font-awesome/css/all.css" rel="stylesheet"> -->
+
+    <link rel="stylesheet" href="//code.jquery.com/ui/1.12.1/themes/base/jquery-ui.css">
+
+    <!-- <link rel="icon" href="<%= BASE_URL %>favicon.ico"> -->
+    <link rel="icon" type="image/png" href="favicon.png">
+    <title>ギコっぽいぽい</title>
+
+    <script>
+        window.EXPECTED_SERVER_VERSION = Number.parseInt("@EXPECTED_SERVER_VERSION@");
+    </script>
   </head>
   <body>
     <noscript>
@@ -13,5 +27,10 @@
     </noscript>
     <div id="app"></div>
     <!-- built files will be auto injected -->
+
+    <audio id="message-sound" src="message.mp3"></audio>
+    <audio id="mention-sound" src="mention.mp3"></audio>
+    <audio id="login-sound" src="login.mp3"></audio>
+
   </body>
 </html>

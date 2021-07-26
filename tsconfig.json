@@ -10,6 +10,7 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
+    "allowJs": true,
     "sourceMap": true,
     "baseUrl": ".",
     "outDir": "./backend-build", /* Redirect output structure to the directory. */
@@ -19,6 +20,9 @@
     "paths": {
       "@/*": [
         "src/*"
+      ],
+      "jquery-ui": [
+        "node_modules/@types/jqueryui/index"
       ]
     },
     "lib": [
