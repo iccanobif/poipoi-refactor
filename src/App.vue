@@ -554,12 +554,12 @@
 </template>
 
 <script lang="ts">
-import { defineComponent } from "vue";
+import { defineComponent, nextTick } from "vue";
 import { io, Socket } from "socket.io-client"
 import HelloWorld from "./components/HelloWorld.vue";
 import { DefaultEventsMap } from "socket.io-client/build/typed-events";
-import { BLOCK_HEIGHT, BLOCK_WIDTH, canUseAudioContext, getFormattedCurrentDate, loadImage, logToServer, postJson, requestNotificationPermission, safeDecodeURI, urlRegex, calculateRealCoordinates } from "./utils"
-import { Direction, PlayerDto, Room, RoomObject, RoomStateDto } from "./backend/types"
+import { BLOCK_HEIGHT, BLOCK_WIDTH, canUseAudioContext, getFormattedCurrentDate, loadImage, logToServer, postJson, requestNotificationPermission, safeDecodeURI, urlRegex, calculateRealCoordinates, UserException, debounceWithImmediateExecution, AudioProcessor, debounceWithDelayedExecution } from "./utils"
+import { Direction, PlayerDto, Room, RoomObject, RoomStateDto, StreamSlot, StreamSlotDto } from "./backend/types"
 import { Character, characters, loadCharacters } from "./character"
 import { isWebrtcReceiveCodecSupported, WebrtcCodec } from "webrtc-codec-support"
 import $ from "jquery";
@@ -567,6 +567,7 @@ import "jquery-ui"
 import User from "./user";
 import { RenderCache } from "./rendercache";
 import { speak } from "./tts";
+import { defaultIceConfig, RTCPeer } from "./rtcpeer";
 
 export default defineComponent({
   name: "App",
@@ -579,7 +580,7 @@ export default defineComponent({
     roomLoadId: 0,
     currentRoom: null as Room | null,
     myUserID: null as string | null,
-    myPrivateUserID: null,
+    myPrivateUserID: null as string | null,
     isWaitingForServerResponseOnMovement: false,
     justSpawnedToThisRoom: true,
     isLoadingRoom: false,
@@ -596,24 +597,26 @@ export default defineComponent({
     isUsernameRedrawRequired: false,
     isDraggingCanvas: false,
     canvasPointerStartState: null,
-    canvasDragStartOffset: null,
+    canvasDragStartOffset: null as { x: number, y: number } | null,
     canvasManualOffset: { x: 0, y: 0 },
     canvasGlobalOffset: { x: 0, y: 0 },
     canvasDimensions: { w: 0, h: 0 },
     userCanvasScale: 1,
-    userCanvasScaleStart: null,
+    userCanvasScaleStart: null as number | null,
     isLowQualityEnabled: localStorage.getItem("isLowQualityEnabled") == "true",
     isCrispModeEnabled: localStorage.getItem("isCrispModeEnabled") == "true",
     blockWidth: BLOCK_WIDTH,
     blockHeight: BLOCK_HEIGHT,
     devicePixelRatio: 1,
+    backgroundImage: null as RenderCache | null,
+    canvasObjects: null as any,
 
     // rula stuff
     isRulaPopupOpen: false,
     roomList: [],
     lastRoomListSortKey: localStorage.getItem("lastRoomListSortKey") || "sortName",
     lastRoomListSortDirection: localStorage.getItem("lastRoomListSortDirection") || 1,
-    rulaRoomSelection: null,
+    rulaRoomSelection: null as string | null,
 
     // user list stuff
     isUserListPopupOpen: false,
@@ -623,7 +626,7 @@ export default defineComponent({
     isPreferencesPopupOpen: false,
     showUsernameBackground: localStorage.getItem("showUsernameBackground") != "false",
     isNewlineOnShiftEnter: localStorage.getItem("isNewlineOnShiftEnter") != "false",
-    bubbleOpacity: localStorage.getItem("bubbleOpacity") || 100,
+    bubbleOpacity: Number(localStorage.getItem("bubbleOpacity") || 100),
     isCommandSectionVisible: localStorage.getItem("isCommandSectionVisible") != "false",
     isMoveSectionVisible: localStorage.getItem("isMoveSectionVisible") != "false",
     isBubbleSectionVisible: localStorage.getItem("isBubbleSectionVisible") != "false",
@@ -641,13 +644,17 @@ export default defineComponent({
     mentionSoundFunction: null as ((msg: string) => boolean) | null,
     
     // streaming
-    streams: [],
-    mediaStream: null,
-    streamSlotIdInWhichIWantToStream: null,
-    rtcPeerSlots: [],
-    takenStreams: [], // streams taken by me
+    streams: [] as StreamSlotDto[],
+    mediaStream: null as MediaStream | null,
+    streamSlotIdInWhichIWantToStream: null as number | null,
+    rtcPeerSlots: [] as {
+        attempts: 0,
+        rtcPeer: RTCPeer | null,
+    }[] | null[],
+    takenStreams: [] as boolean[], // streams taken by me
     slotVolume: JSON.parse(localStorage.getItem("slotVolume") || "{}"), // key: slot Id / value: volume
-    slotCompression: [],
+    slotCompression: [] as boolean[],
+    audioProcessors: {} as { [slotID: number]: AudioProcessor },
 
     // stream settings
     isStreamPopupOpen: false,
@@ -686,7 +693,7 @@ export default defineComponent({
 
     allCharacters: Object.values(characters),
 
-    vuMeterTimer: null,
+    vuMeterTimer: null as NodeJS.Timer | null,
     highlightedUserId: null as string | null,
     highlightedUserName: null as string | null,
     movementDirection: null as Direction | null,
@@ -845,7 +852,7 @@ export default defineComponent({
                 step: 0.01,
                 value: this.soundEffectVolume,
                 slide: ( event, ui ) => {
-                    this.changeSoundEffectVolume(ui.value);
+                    this.changeSoundEffectVolume(ui.value!);
                 }
             });
             $( "#voice-volume" ).slider({
@@ -856,7 +863,7 @@ export default defineComponent({
                 step: 1,
                 value: this.voiceVolume,
                 slide: ( event, ui ) => {
-                    this.changeVoiceVolume(ui.value);
+                    this.changeVoiceVolume(ui.value!);
                 }
             });
 
@@ -896,7 +903,7 @@ export default defineComponent({
         this.loadRoomBackground();
         this.loadRoomObjects();
         
-        await (loadCharacters(this.getSVGMode()));
+        await (loadCharacters(this.isCrispModeEnabled));
         this.isRedrawRequired = true;
     },
     setLanguage: function (code: string)
@@ -918,10 +925,11 @@ export default defineComponent({
         
         const roomLoadId = this.roomLoadId;
         
-        const image = await loadImage(this.currentRoom.backgroundImageUrl.replace(".svg", urlMode + ".svg"))
+        const image = await loadImage(this.currentRoom!.backgroundImageUrl.replace(".svg", urlMode + ".svg"))
         
         if (this.roomLoadId != roomLoadId) return;
-        this.currentRoom.backgroundImage = RenderCache.Image(image, this.currentRoom.scale);
+
+        this.backgroundImage = RenderCache.Image(image, this.currentRoom!.scale);
         this.isRedrawRequired = true;
     },
     loadRoomObjects: async function ()
@@ -930,8 +938,8 @@ export default defineComponent({
         
         const roomLoadId = this.roomLoadId;
         
-        await Promise.all(Object.values(this.currentRoom.objects).map((o: RoomObject) =>
-            loadImage("rooms/" + this.currentRoom.id + "/" + o.url.replace(".svg", urlMode + ".svg"))
+        await Promise.all(Object.values(this.currentRoom!.objects).map((o: RoomObject) =>
+            loadImage("rooms/" + this.currentRoom!.id + "/" + o.url.replace(".svg", urlMode + ".svg"))
                 .then((image) =>
             {
                 const scale = o.scale ? o.scale : 1;
@@ -955,7 +963,7 @@ export default defineComponent({
         this.isLoadingRoom = true;
         this.roomLoadId = this.roomLoadId + 1;
 
-        if (this.currentRoom.needsFixedCamera)
+        if (this.currentRoom!.needsFixedCamera)
             this.canvasManualOffset = { x: 0, y: 0 }
         
         const previousRoomId = this.currentRoom && this.currentRoom.id
@@ -965,9 +973,12 @@ export default defineComponent({
 
         for (const u of usersDto)
         {
-            this.addUser(u);
-            if(previousRoomId != this.currentRoom.id && this.users[u.id].message)
-                this.displayUserMessage(u, this.users[u.id].message);
+            const user = this.addUser(u);
+            
+            if (previousRoomId != this.currentRoom.id && user.message)
+            {
+                this.displayUserMessage(user, user.message);
+            }
         }
         
         this.loadRoomBackground();
@@ -999,7 +1010,7 @@ export default defineComponent({
         
         if (!loginMessage.isLoginSuccessful) throw new UserException(loginMessage.error);
         
-        myUserID = this.myUserID = loginMessage.userId;
+        this.myUserID = loginMessage.userId;
         this.myPrivateUserID = loginMessage.privateUserId;
 
         logToServer(new Date() + " " + this.myUserID 
@@ -1050,7 +1061,7 @@ export default defineComponent({
             // Check if there's a new version
             const response = await fetch("/version");
             if (!response.ok)
-                throw new Error(response)
+                throw response
             const newVersion = await response.json();
             if (newVersion > window.EXPECTED_SERVER_VERSION)
                 this.pageRefreshRequired = true
@@ -1204,7 +1215,7 @@ export default defineComponent({
             this.sortRoomList(this.lastRoomListSortKey, this.lastRoomListSortDirection)
             this.isRulaPopupOpen = true;
 
-            await Vue.nextTick()
+            await nextTick()
             document.getElementById("rula-popup")!.focus()
         });
 
@@ -1250,7 +1261,7 @@ export default defineComponent({
             this.writeMessageToLog("SYSTEM", i18n.t("msg.chess_quit").replace("@USER_NAME@", winnerUserName), null)
         })
     },
-    addUser: function (userDTO: PlayerDto)
+    addUser: function (userDTO: PlayerDto): User
     {
         const newUser = new User(userDTO);
         newUser.moveImmediatelyToPosition(
@@ -1266,6 +1277,8 @@ export default defineComponent({
         newUser.voicePitch = userDTO.voicePitch
         
         this.users[userDTO.id] = newUser;
+
+        return newUser;
     },
     writeMessageToLog: function(userName: string, msg: string, userId: string)
     {
@@ -1317,7 +1330,7 @@ export default defineComponent({
                 anchor.target = '_blank';
                 anchor.setAttribute('tabindex', '-1');
                 anchor.innerHTML = htmlUrl;
-                const url = anchor.textContent;
+                const url = anchor.textContent!;
                 anchor.href = (prefix == 'www.' ? 'http://' + url : url);
                 anchor.textContent = safeDecodeURI(url);
                 return anchor.outerHTML;
@@ -1397,10 +1410,8 @@ export default defineComponent({
             return i18n.t("default_user_name");
         return name;
     },
-    drawImage: function (context: CanvasRenderingContext2D, image, x: number, y: number)
+    drawImage: function (context: CanvasRenderingContext2D, image: HTMLCanvasElement, x: number = 0, y: number = 0)
     {
-        if (!x) x = 0;
-        if (!y) y = 0;
         context.drawImage(
             image,
             Math.round(this.getCanvasScale() * x + this.canvasGlobalOffset.x),
@@ -1471,17 +1482,17 @@ export default defineComponent({
         const boxMargin = 6;
         const boxPadding = [5, 3];
         
-        let messageLines: string[] | null = user.message.split(/\r\n|\n\r|\n|\r/);
+        let messageLines: string[] = user.message!.split(/\r\n|\n\r|\n|\r/);
         let preparedLines = null as string[] | null;
-        let textWidth = null;
+        let textWidth = 0;
         
         const arrowCorner = [
             ["down", "left"].includes(user.bubblePosition),
             ["up", "left"].includes(user.bubblePosition)];
         
-        return new RenderCache((canvas, scale: number) =>
+        return new RenderCache((canvas: HTMLCanvasElement, scale: number) =>
         {
-            const context = canvas.getContext('2d');
+            const context = canvas.getContext('2d')!;
             context.font = fontHeight + fontSuffix;
             
             if (preparedLines === null)
@@ -1491,7 +1502,7 @@ export default defineComponent({
                 
                 while (messageLines.length && preparedLines.length < 5)
                 {
-                    const line = messageLines.shift()
+                    const line = messageLines.shift()!
                     let lastPreparedLine = "";
                     let lastLineWidth = 0;
                     for (let i=0; i<line!.length; i++)
@@ -1515,7 +1526,6 @@ export default defineComponent({
                         messageLines.unshift(line.substring(lastPreparedLine.length))
                     textWidth = Math.max(textWidth, lastLineWidth);
                 }
-                messageLines = null;
             }
             
             const boxWidth = textWidth + 2 * boxPadding[0];
@@ -1629,7 +1639,7 @@ export default defineComponent({
             y: manualOffset.y + userOffset.y
         };
         
-        const backgroundImage = this.currentRoom!.backgroundImage!.getImage(this.getCanvasScale())
+        const backgroundImage = this.backgroundImage!.getImage(this.getCanvasScale())
         
         const bcDiff =
         {
@@ -1704,13 +1714,13 @@ export default defineComponent({
         
         this.drawImage(
             context,
-            this.currentRoom.backgroundImage.getImage(this.getCanvasScale())
+            this.backgroundImage!.getImage(this.getCanvasScale())
         );
     },
     
     drawObjects: function ()
     {
-        const context = this.canvasContext;
+        const context = this.canvasContext!;
         
         for (const o of this.canvasObjects)
         {
@@ -1872,7 +1882,7 @@ export default defineComponent({
     
     paint: function (delta: number)
     {
-        if (this.isLoadingRoom || !this.currentRoom!.backgroundImage)
+        if (this.isLoadingRoom || !this.backgroundImage)
             return;
 
         this.detectCanvasResize();
@@ -1946,10 +1956,10 @@ export default defineComponent({
             this.takenStreams[i] = false
             this.slotCompression[i] = false
             
-            if (audioProcessors[i])
+            if (this.audioProcessors[i])
             {
-                audioProcessors[i].dispose()
-                delete audioProcessors[i]
+                this.audioProcessors[i].dispose()
+                delete this.audioProcessors[i]
             }
         }
 
@@ -1962,7 +1972,7 @@ export default defineComponent({
     {
         for (const u of Object.values(this.users))
             u.moveImmediatelyToPosition(
-                this.currentRoom,
+                this.currentRoom!,
                 u.logicalPositionX,
                 u.logicalPositionY,
                 u.direction
@@ -1970,25 +1980,25 @@ export default defineComponent({
         this.updateCanvasObjects();
         this.isRedrawRequired = true;
     },
-    sendNewPositionToServer: function (direction)
+    sendNewPositionToServer: function (direction: Direction)
     {
         if (
             this.isLoadingRoom ||
             this.isWaitingForServerResponseOnMovement ||
-            (this.users[this.myUserID] && this.users[this.myUserID].isWalking)
+            (this.users[this.myUserID!] && this.users[this.myUserID!].isWalking)
         )
             return;
 
         this.isWaitingForServerResponseOnMovement = true;
         this.socket!.emit("user-move", direction);
     },
-    sendNewBubblePositionToServer: function (position)
+    sendNewBubblePositionToServer: function (position: Direction)
     {
         this.socket!.emit("user-bubble-position", position);
     },
     sendMessageToServer: function ()
     {
-        const inputTextbox = document.getElementById("input-textbox");
+        const inputTextbox = document.getElementById("input-textbox") as HTMLInputElement;
 
         const message = inputTextbox.value.substr(0, 500);
         if (message.match(/sageru/gi))
@@ -2004,7 +2014,7 @@ export default defineComponent({
         else
         {
             // If the user has already cleared their bubble, avoid sending any more empty messages.
-            if (message || this.users[this.myUserID].message)
+            if (message || this.users[this.myUserID!].message)
                 this.socket!.emit("user-msg", message);
         }
         inputTextbox.value = "";
@@ -2057,20 +2067,20 @@ export default defineComponent({
                 // who wants to figure out.
                 this.paint(1)
             });
-            observer.observe(document.getElementById("canvas-container"));
+            observer.observe(document.getElementById("canvas-container")!);
         }
     },
     toggleInfobox: function ()
     {
         localStorage.setItem(
             "isInfoboxVisible",
-            (this.isInfoboxVisible = !this.isInfoboxVisible)
+            (this.isInfoboxVisible = !this.isInfoboxVisible) ? "true" : "false"
         );
     },
     toggleUsernameBackground: function () {
         localStorage.setItem(
             "showUsernameBackground",
-            (this.showUsernameBackground = !this.showUsernameBackground)
+            (this.showUsernameBackground = !this.showUsernameBackground) ? "true" : "false"
         );
         this.isUsernameRedrawRequired = true;
         this.isRedrawRequired = true;
@@ -2176,7 +2186,7 @@ export default defineComponent({
             }
         }
     },
-    setMovementDirection: function(direction)
+    setMovementDirection: function(direction: Direction | null)
     {
         this.movementDirection = direction
 
@@ -2298,7 +2308,7 @@ export default defineComponent({
     {
         this.setCanvasScale(this.userCanvasScale - 0.1);
     },
-    handleCanvasWheel: function (event)
+    handleCanvasWheel: function (event: WheelEvent)
     {
         if (event.deltaY < 0)
             this.zoomIn()
@@ -2308,7 +2318,7 @@ export default defineComponent({
         event.preventDefault();
         return false;
     },
-    setCanvasScale: function (canvasScale)
+    setCanvasScale: function (canvasScale: number)
     {
         if(canvasScale > 3)
             canvasScale = 3;
@@ -2330,9 +2340,9 @@ export default defineComponent({
         return Math.round(window.devicePixelRatio*100)/100;
     },
 
-    setupRTCConnection: function (slotId)
+    setupRTCConnection: function (slotId: number): RTCPeer
     {
-        const rtcPeer = new RTCPeer(defaultIceConfig, (type, msg) =>
+        const rtcPeer = new RTCPeer(defaultIceConfig, (type: string, msg: string | undefined) =>
         {
             // TODO figure out if keeping this line causes issues.
             // More privacy with candidates not being sent.
@@ -2369,14 +2379,14 @@ export default defineComponent({
         };
 
         rtcPeer.open();
-        rtcPeer.conn.addEventListener("icecandidateerror", (ev) => 
+        rtcPeer.conn!.addEventListener("icecandidateerror", (ev) => 
         {
             console.error("icecandidateerror", ev, ev.errorCode, ev.errorText, ev.address, ev.url, ev.port)
         })
         
-        rtcPeer.conn.addEventListener("iceconnectionstatechange", (ev) =>
+        rtcPeer.conn!.addEventListener("iceconnectionstatechange", (ev) =>
         {
-            const state = rtcPeer.conn.iceConnectionState;
+            const state = rtcPeer.conn!.iceConnectionState;
             console.log("RTC Connection state", state)
             logToServer(new Date() + " " + this.myUserID + " RTC Connection state " + state)
             
@@ -2406,13 +2416,13 @@ export default defineComponent({
         return rtcPeer;
     },
     
-    updateCurrentRoomStreams: function (streams)
+    updateCurrentRoomStreams: function (streams: StreamSlotDto[])
     {
-        this.takenStreams = streams.map((s, slotId) => {
+        this.takenStreams = streams.map((s, slotId: number) => {
             return !!this.takenStreams[slotId]
         });
 
-        this.rtcPeerSlots = streams.map((s, slotId) => {
+        this.rtcPeerSlots = streams.map((s, slotId: number) => {
             if (!this.rtcPeerSlots[slotId])
                 return null
 
@@ -2460,9 +2470,10 @@ export default defineComponent({
             
             // Sadly it looks like there's no other way to set a default volume for the video,
             // since apparently <video> elements have no "volume" attribute and it must be set via javascript.
-            // So, i use Vue.nextTick() to execute this piece of code only after the element has been added to the DOM.
-            Vue.nextTick(() => {
-                document.getElementById("received-video-" + slotId).volume = this.slotVolume[slotId]
+            // So, i use nextTick() to execute this piece of code only after the element has been added to the DOM.
+            nextTick(() => {
+                const receivedVideoElement = document.getElementById("received-video-" + slotId) as HTMLVideoElement
+                receivedVideoElement.volume = this.slotVolume[slotId]
             })
         }
     },
@@ -2485,7 +2496,7 @@ export default defineComponent({
                 autoGainControl: this.streamAutoGain,
             }
 
-            let userMediaPromise = null
+            let userMediaPromise: Promise<MediaStream> | null = null
             if ((withSound && !withScreenCaptureAudio) || !withScreenCapture)
                 userMediaPromise = navigator.mediaDevices.getUserMedia(
                     {
@@ -2502,7 +2513,7 @@ export default defineComponent({
                     }
                 );
             
-            let screenMediaPromise = null
+            let screenMediaPromise: Promise<MediaStream> | null = null
             if (withScreenCapture)
                 screenMediaPromise = navigator.mediaDevices.getDisplayMedia(
                 {
@@ -2514,18 +2525,32 @@ export default defineComponent({
             // and getUserMedia() were initiated by a user action.
             const promiseResults = await Promise.allSettled([userMediaPromise, screenMediaPromise])
 
-            if (promiseResults.find(r => r.status == "rejected"))
+            const userMediaResults = promiseResults[0]
+            const screenMediaResults = promiseResults[1]
+
+            if (userMediaResults.status == "rejected")
             {
                 // Close the devices that were successfully opened
-                for (const mediaStream of promiseResults.filter(r => r.status == "fulfilled"))
-                    for (const track of mediaStream.value.getTracks()) 
+                if (screenMediaResults.status == "fulfilled" && screenMediaResults.value)
+                    for (const track of (await screenMediaResults.value).getTracks()) 
                         track.stop();
                 
-                throw new Error(promiseResults.find(r => r.status == "rejected").reason)
+                throw userMediaResults.reason
             }
 
-            const userMedia = promiseResults[0].value
-            const screenMedia = promiseResults[1].value
+            if (screenMediaResults.status == "rejected")
+            {
+                // Close the devices that were successfully opened
+                if (userMediaResults.status == "fulfilled" && userMediaResults.value)
+                    for (const track of (await userMediaResults.value).getTracks()) 
+                        track.stop();
+                
+                throw screenMediaResults.reason
+            }
+
+
+            const userMedia = await userMediaResults.value
+            const screenMedia = await screenMediaResults.value
 
             // Populate this.mediaStream
             if (!withScreenCapture)
@@ -2587,15 +2612,15 @@ export default defineComponent({
                         try {
                             if (this.streamSlotIdInWhichIWantToStream == null)
                             {
-                                clearInterval(this.vuMeterTimer)
+                                clearInterval(this.vuMeterTimer!)
                                 return
                             }
                             analyser.getByteFrequencyData(dataArrayAlt)
                             
                             const max = dataArrayAlt.reduce((acc, val) => Math.max(acc, val))
                             const level = max / 255
-                            const vuMeterBarPrimary = document.getElementById("vu-meter-bar-primary-" + this.streamSlotIdInWhichIWantToStream)
-                            const vuMeterBarSecondary = document.getElementById("vu-meter-bar-secondary-" + this.streamSlotIdInWhichIWantToStream)
+                            const vuMeterBarPrimary = document.getElementById("vu-meter-bar-primary-" + this.streamSlotIdInWhichIWantToStream)!
+                            const vuMeterBarSecondary = document.getElementById("vu-meter-bar-secondary-" + this.streamSlotIdInWhichIWantToStream)!
                             
                             vuMeterBarSecondary.style.width = vuMeterBarPrimary.style.width
                             vuMeterBarPrimary.style.width = level * 100 + "%"
@@ -2603,7 +2628,7 @@ export default defineComponent({
                         catch (exc)
                         {
                             console.error(exc)
-                            clearInterval(this.vuMeterTimer)
+                            clearInterval(this.vuMeterTimer!)
                         }
                     }, 100)
                 }
@@ -2614,13 +2639,12 @@ export default defineComponent({
                 withVideo: withVideo,
                 withSound: withSound,
                 isPrivateStream: this.streamIsPrivateStream,
-                info: []
-                    .concat(this.mediaStream.getAudioTracks().map(t => ({
+                info: this.mediaStream!.getAudioTracks().map(t => ({
                         constraints: t.getConstraints && t.getConstraints(),
                         settings: t.getSettings && t.getSettings(),
                         capabilities: t.getCapabilities && t.getCapabilities(),
-                    })))
-                    .concat(this.mediaStream.getVideoTracks().map(t => ({
+                    }))
+                    .concat(this.mediaStream!.getVideoTracks().map(t => ({
                         constraints: t.getConstraints && t.getConstraints(),
                         settings: t.getSettings && t.getSettings(),
                         capabilities: t.getCapabilities && t.getCapabilities(),
@@ -2642,37 +2666,41 @@ export default defineComponent({
                 this.showWarningToast(i18n.t("msg.error_obtaining_media"));
             }
             this.wantToStream = false;
-            this.mediaStream = false;
+            this.mediaStream = null;
             this.streamSlotIdInWhichIWantToStream = null;
         }
     },
-    setupRtcPeerSlot: function(slotId)
+    setupRtcPeerSlot: function(slotId: number)
     {
-        if (!this.rtcPeerSlots[slotId]) this.rtcPeerSlots[slotId] = {
-            attempts: 0
-        }
-        this.rtcPeerSlots[slotId].rtcPeer = this.setupRTCConnection(slotId)
+        if (!this.rtcPeerSlots[slotId]) 
+            this.rtcPeerSlots[slotId] = {
+                attempts: 0,
+                rtcPeer: null,
+            }
+
+        this.rtcPeerSlots[slotId]!.rtcPeer = this.setupRTCConnection(slotId)
         return this.rtcPeerSlots[slotId]
     },
     startStreaming: async function ()
     {
-        const slotId = this.streamSlotIdInWhichIWantToStream;
-        const rtcPeer = this.setupRtcPeerSlot(slotId).rtcPeer;
+        const slotId = this.streamSlotIdInWhichIWantToStream!;
+        const rtcPeer = this.setupRtcPeerSlot(slotId)!.rtcPeer!;
         
         Vue.set(this.takenStreams, slotId, false);
-        this.mediaStream
+        this.mediaStream!
             .getTracks()
             .forEach((track) =>
-                rtcPeer.conn.addTrack(track, this.mediaStream)
+                rtcPeer.conn!.addTrack(track, this.mediaStream!)
             );
         
-        document.getElementById("local-video-" + slotId).srcObject = this.mediaStream;
+        const videoElement = document.getElementById("local-video-" + slotId) as HTMLVideoElement
+        videoElement.srcObject = this.mediaStream;
     },
     stopStreaming: function ()
     {
         for (const track of this.mediaStream.getTracks()) track.stop();
         
-        const streamSlotId = this.streamSlotIdInWhichIWantToStream;
+        const streamSlotId = this.streamSlotIdInWhichIWantToStream!;
         
         document.getElementById("local-video-" + streamSlotId).srcObject = this.mediaStream = null;
         if (this.vuMeterTimer)
@@ -2680,9 +2708,10 @@ export default defineComponent({
         
         this.streamSlotIdInWhichIWantToStream = null;
 
-        if (this.rtcPeerSlots[streamSlotId])
+        const peerSlot = this.rtcPeerSlots[streamSlotId]
+        if (peerSlot)
         {
-            this.rtcPeerSlots[streamSlotId].rtcPeer.close()
+            peerSlot.rtcPeer!.close()
             this.rtcPeerSlots[streamSlotId] = null;
         }
         
@@ -2692,7 +2721,7 @@ export default defineComponent({
         // makes the canvas completely gray, so i force a redraw
         this.isRedrawRequired = true; 
     },
-    wantToTakeStream: function (streamSlotId)
+    wantToTakeStream: function (streamSlotId: number)
     {
         if (!window.RTCPeerConnection)
         {
@@ -2705,13 +2734,13 @@ export default defineComponent({
         if (streamSlotId in this.streams && this.streams[streamSlotId].isReady)
             this.takeStream(streamSlotId);
     },
-    takeStream: function (streamSlotId)
+    takeStream: function (streamSlotId: number)
     {
         if (this.rtcPeerSlots[streamSlotId]) return // no need to attempt again to take this stream
 
-        const rtcPeer = this.setupRtcPeerSlot(streamSlotId).rtcPeer;
+        const rtcPeer = this.setupRtcPeerSlot(streamSlotId)!.rtcPeer!;
 
-        rtcPeer.conn.addEventListener(
+        rtcPeer.conn!.addEventListener(
             "track",
             (event) =>
             {
@@ -2719,19 +2748,19 @@ export default defineComponent({
                 {
                     const stream = event.streams[0]
 
-                    const videoElement = document.getElementById("received-video-" + streamSlotId)
+                    const videoElement = document.getElementById("received-video-" + streamSlotId) as HTMLVideoElement
                     videoElement.srcObject = stream;
                     $( "#video-container-" + streamSlotId ).resizable({aspectRatio: true})
 
-                    if (audioProcessors[streamSlotId])
-                        audioProcessors[streamSlotId].dispose()
+                    if (this.audioProcessors[streamSlotId])
+                        this.audioProcessors[streamSlotId].dispose()
                     
                     if (this.streams[streamSlotId].withSound)
                     {
-                        audioProcessors[streamSlotId] = new AudioProcessor(stream, videoElement, this.slotVolume[streamSlotId])
+                        this.audioProcessors[streamSlotId] = new AudioProcessor(stream, videoElement, this.slotVolume[streamSlotId])
                         
                         if (this.slotCompression[streamSlotId])
-                            audioProcessors[streamSlotId].enableCompression()
+                            this.audioProcessors[streamSlotId].enableCompression()
                     }
                 }
                 catch (exc)
@@ -2778,7 +2807,7 @@ export default defineComponent({
             this.isUserListPopupOpen = true;
             if (this.highlightedUserId)
             {
-                Vue.nextTick(() => {
+                nextTick(() => {
                     const element = document.getElementById("user-list-element-" + this.highlightedUserId)
                     if (element) element.scrollIntoView({ block: "nearest" })
                 })
@@ -2865,16 +2894,16 @@ export default defineComponent({
         this.wantToStream = false;
         this.streamSlotIdInWhichIWantToStream = null;
     },
-    changeStreamVolume: function (streamSlotId)
+    changeStreamVolume: function (streamSlotId: number)
     {
-        const volumeSlider = document.getElementById("volume-" + streamSlotId);
+        const volumeSlider = document.getElementById("volume-" + streamSlotId) as HTMLInputElement;
 
-        audioProcessors[streamSlotId].setVolume(volumeSlider.value)
+        this.audioProcessors[streamSlotId].setVolume(volumeSlider.value)
 
         this.slotVolume[streamSlotId] = volumeSlider.value;
         localStorage.setItem("slotVolume", JSON.stringify(this.slotVolume))
     },
-    changeSoundEffectVolume: function (newVolume)
+    changeSoundEffectVolume: function (newVolume: number)
     {
         debouncedLogSoundVolume(this.myUserID, newVolume)
         this.soundEffectVolume = newVolume
@@ -2895,7 +2924,7 @@ export default defineComponent({
     {
         this.socket!.emit("user-room-list");
     },
-    selectRoomForRula: function (roomId)
+    selectRoomForRula: function (roomId: string)
     {
         this.rulaRoomSelection = roomId;
     },
@@ -2906,22 +2935,26 @@ export default defineComponent({
     handleDarkMode: function ()
     {
         this.isRedrawRequired = true
+
+        const chatLog = document.getElementById("chatLog") as HTMLDivElement
+
+        const lastChild = chatLog.lastChild as HTMLElement
         
-        if(chatLog.lastChild && window.ResizeObserver)
+        if(lastChild && window.ResizeObserver)
         {
             const observer = new ResizeObserver((mutationsList, observer) =>
             {
-                chatLog.lastChild.scrollIntoView({ block: "end" })
-                observer.unobserve(chatLog.lastChild);
+                lastChild.scrollIntoView({ block: "end" })
+                observer.unobserve(lastChild);
             });
-            observer.observe(chatLog.lastChild);
+            observer.observe(lastChild);
         }
 
         this.storeSet("isDarkMode");
     },
-    storeSet: function (itemName)
+    storeSet: function (itemName: string)
     {
-        localStorage.setItem(itemName, this[itemName]);
+        localStorage.setItem(itemName, (this as any)[itemName]);
     },
     handleBubbleOpacity: function ()
     {
@@ -2932,7 +2965,9 @@ export default defineComponent({
     {
         if (confirm(i18n.t("msg.are_you_sure_you_want_to_logout")))
         {
-            this.socket.close()
+            // TODO stop all streams (both sending and receiving)
+            if (this.socket)
+                this.socket.close()
             this.loggedIn = false
             this.loggedOut = true
             window.onbeforeunload = null
@@ -3071,7 +3106,7 @@ export default defineComponent({
                               .filter(u => u.id != this.myUserID)
                               .map(u => ({
                                   id: u.id,
-                                  name: u.name,
+                                  name: u.name as string | null,
                                   isInRoom: true,
                                   isInactive: u.isInactive,
                                 }))
@@ -3095,7 +3130,7 @@ export default defineComponent({
             case "ArrowDown":
             case "KeyJ":
                 this.rulaRoomSelection = this.roomList[(previousIndex + 1) % this.roomList.length].id
-                document.getElementById("room-tr-" + this.rulaRoomSelection).scrollIntoView({ block: "nearest"})
+                document.getElementById("room-tr-" + this.rulaRoomSelection)!.scrollIntoView({ block: "nearest"})
                 break;
             case "ArrowUp":
             case "KeyK":
@@ -3103,7 +3138,7 @@ export default defineComponent({
                     this.rulaRoomSelection = this.roomList[this.roomList.length - 1].id
                 else
                     this.rulaRoomSelection = this.roomList[previousIndex - 1].id
-                document.getElementById("room-tr-" + this.rulaRoomSelection).scrollIntoView({ block: "nearest"})
+                document.getElementById("room-tr-" + this.rulaRoomSelection)!.scrollIntoView({ block: "nearest"})
                 break;
             case "Enter":
                 this.rula(this.rulaRoomSelection)
@@ -3126,15 +3161,28 @@ export default defineComponent({
     onCompressionChanged: function(streamSlotID: number)
     {
         if (this.slotCompression[streamSlotID])
-            audioProcessors[streamSlotID].enableCompression()
+            this.audioProcessors[streamSlotID].enableCompression()
         else
-            audioProcessors[streamSlotID].disableCompression()
+            this.audioProcessors[streamSlotID].disableCompression()
     }
   },
   components: {
     HelloWorld,
   },
 });
+
+const debouncedSpeakTest = debounceWithDelayedExecution((ttsVoiceURI: string, voiceVolume: number) => {
+    if (window.speechSynthesis)
+    {
+        speechSynthesis.cancel()
+        speak(i18n.t("test"), ttsVoiceURI, voiceVolume)
+    }
+}, 150)
+
+const debouncedLogSoundVolume = debounceWithDelayedExecution((myUserID: string, volume: number) => {
+    logToServer(myUserID + " SFX volume: " + volume)
+}, 150)
+
 </script>
 
 <style lang="scss">
@@ -3142,7 +3190,3 @@ export default defineComponent({
   
 }
 </style>
-
-function io(): number {
-  throw new Error("Function not implemented.");
-}

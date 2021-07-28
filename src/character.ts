@@ -100,9 +100,9 @@ export const characters: { [id: string]: Character } = {
     hotsuma_giko: new Character("hotsuma_giko", "svg", false),
 }
 
-export const loadCharacters = async (crispMode: boolean) => {
+export const loadCharacters = async (isCrispMode: boolean) => {
 
-    const response = await fetch("/characters/" + (crispMode ? "crisp" : "regular"))
+    const response = await fetch("/characters/" + (isCrispMode ? "crisp" : "regular"))
     const dto = await response.json()
 
     return Promise.all(Object.keys(characters).map(characterId => characters[characterId].loadImages(dto[characterId])))

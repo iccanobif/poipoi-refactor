@@ -25,7 +25,7 @@ export default class User
     nameImage = null;
     
     message: string | null = null;
-    lastMessage = null;
+    lastMessage = null as string | null;
     bubblePosition = "up";
     bubbleImage = null;
     voicePitch = 1;

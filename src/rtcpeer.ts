@@ -1,6 +1,10 @@
 export class RTCPeer
 {
-    constructor(iceConfig, sendCallback)
+    conn: RTCPeerConnection | null = null
+    _offer: string | null | undefined = null
+    sendCallback: (type: string, msg: string | undefined) => void
+
+    constructor(iceConfig, sendCallback: (type: string, msg: string | undefined) => void)
     {
 		if (iceConfig === undefined)
 			this.iceConfig = defaultIceConfig;
@@ -8,12 +12,13 @@ export class RTCPeer
 			this.iceConfig = iceConfig
         
         this.sendCallback = sendCallback
-        this.errorCallback = (error, event) => console.error(error, event)
-        
         this._offer = null
-        
         this.conn = null
     }
+
+    errorCallback(error: any, event: Event) {
+        console.error(error, event)
+    } 
     
     open()
     {
@@ -75,13 +80,13 @@ export class RTCPeer
             new RTCSessionDescription({type: 'answer', sdp: answer}))
     }
     
-    handleCandidateEvent(event) // private
+    handleCandidateEvent(event: RTCPeerConnectionIceEvent) // private
     {
         if (event.candidate)
             this.sendCallback('candidate', event.candidate)
     }
     
-    addCandidate(candidate) // : RTCIceCandidate
+    addCandidate(candidate: RTCIceCandidate) // : RTCIceCandidate
     {
         if (this.conn === null) return;
         this.conn.addIceCandidate(candidate);

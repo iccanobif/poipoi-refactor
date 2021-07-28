@@ -1,5 +1,6 @@
 import { Player } from "./users";
 import { ChessInstance } from "chess.js"
+import { RenderCache } from "@/rendercache";
 
 const JanusClient = require('janus-videoroom-client').Janus;
 
@@ -31,7 +32,7 @@ export interface Door
     target: {
         roomId: string
         doorId: string
-    } | string | null;
+    } | null;
 }
 
 export interface RoomObject
@@ -46,6 +47,13 @@ export interface RoomObject
     }
     xOffset?: number;
     yOffset?: number;
+}
+
+export interface FrontendRoomObject extends RoomObject
+{
+    image: RenderCache,
+    physicalPositionX: number,
+    physicalPositionY: number,
 }
 
 export interface Room
@@ -124,13 +132,32 @@ export interface PlayerDto
     lastRoomMessage: string,
 }
 
-export interface StreamSlotDto
+// export interface StreamSlotDto
+// {
+//     isActive: true,
+//     isReady: boolean,
+//     withSound: boolean | null,
+//     withVideo: boolean | null,
+//     userId: string | null,
+// }
+
+export type StreamSlotDto = ActiveStreamSlotDto | InactiveStreamSlotDto
+
+export interface ActiveStreamSlotDto
 {
-    isActive: boolean,
+    isActive: true,
     isReady: boolean,
-    withSound: boolean | null,
-    withVideo: boolean | null,
-    userId: string | null,
+    withSound: boolean,
+    withVideo: boolean,
+    userId: string,
+}
+export interface InactiveStreamSlotDto
+{
+    isActive: false,
+    isReady: false,
+    withSound: false,
+    withVideo: false,
+    userId: null,
 }
 
 export interface ChessboardState {

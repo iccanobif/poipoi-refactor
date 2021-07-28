@@ -1,5 +1,17 @@
 declare global {
-    interface Window { EXPECTED_SERVER_VERSION: number; }
+    interface Window {
+         EXPECTED_SERVER_VERSION: number; 
+    }
+    interface MediaDevices {
+        getDisplayMedia(constraints?: MediaStreamConstraints): Promise<MediaStream>;
+      }
+    
+      // if constraints config still lose some prop, you can define it by yourself also
+      interface MediaTrackConstraintSet {
+        displaySurface?: ConstrainDOMString;
+        logicalSurface?: ConstrainBoolean;
+        // more....
+      }
 }
 
 import { Room } from "./backend/types";
@@ -221,4 +233,12 @@ export function requestNotificationPermission()
         if (promise)
             promise.then(resolve)
     })
+}
+
+// TODO test if this UserException actually works
+export class UserException extends Error {
+    constructor(message: string)
+    {
+        super(message)
+    }
 }
