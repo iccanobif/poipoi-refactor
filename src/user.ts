@@ -22,12 +22,12 @@ export default class User
     frameCount = 0
     isInactive = false;
     
-    nameImage = null;
+    nameImage: RenderCache | null = null;
     
     message: string | null = null;
     lastMessage = null as string | null;
     bubblePosition = "up";
-    bubbleImage = null;
+    bubbleImage: RenderCache | null = null;
     voicePitch = 1;
 
     // constructor(character: Character, name: string)

@@ -176,8 +176,13 @@
                 <div v-for="(streamSlot, index) in streams" v-bind:class="{'stream-is-active': streamSlot.isActive}" v-bind:key="streamSlot">
                     <hr v-if="index != 0" />
                     <div>
-                        {{ $t("ui.label_stream", {index: index+1}) }}<span class="stream-title">{{ streamSlot.title
-                            }}</span>
+                        {{ $t("ui.label_stream", {index: index+1}) }}<span class="stream-title">{{
+                            streamSlot.isActive
+                                ? (streamSlot.userId in users
+                                    ? toDisplayName(this.users[stream.userId].name)
+                                    : "")
+                                : "OFF"
+                        }}</span>
                     </div>
                     <div :id="'video-container-' + index" class='video-container pinned-video' v-show="streamSlot.withVideo && ((takenStreams[index] && streamSlot.isReady) || index == streamSlotIdInWhichIWantToStream)">
                         <button
@@ -559,21 +564,22 @@ import { io, Socket } from "socket.io-client"
 import HelloWorld from "./components/HelloWorld.vue";
 import { DefaultEventsMap } from "socket.io-client/build/typed-events";
 import { BLOCK_HEIGHT, BLOCK_WIDTH, canUseAudioContext, getFormattedCurrentDate, loadImage, logToServer, postJson, requestNotificationPermission, safeDecodeURI, urlRegex, calculateRealCoordinates, UserException, debounceWithImmediateExecution, AudioProcessor, debounceWithDelayedExecution } from "./utils"
-import { Direction, PlayerDto, Room, RoomObject, RoomStateDto, StreamSlot, StreamSlotDto } from "./backend/types"
+import { Direction, PlayerDto, Room, RoomListItem, RoomListItemDto, RoomObject, RoomStateDto, StreamSlot, StreamSlotDto } from "./backend/types"
 import { Character, characters, loadCharacters } from "./character"
-import { isWebrtcReceiveCodecSupported, WebrtcCodec } from "webrtc-codec-support"
+import { isWebrtcReceiveCodecSupported, isWebrtcPublishCodecSupported, WebrtcCodec } from "webrtc-codec-support"
 import $ from "jquery";
 import "jquery-ui"
 import User from "./user";
 import { RenderCache } from "./rendercache";
 import { speak } from "./tts";
 import { defaultIceConfig, RTCPeer } from "./rtcpeer";
+import i18n from "./i18n";
 
 export default defineComponent({
   name: "App",
   data: () => ({
     selectedCharacter: null as Character | null,
-    
+
     socket: null as Socket<DefaultEventsMap, DefaultEventsMap> | null,
 
     users: {} as { [id: string]: User},
@@ -590,13 +596,16 @@ export default defineComponent({
     characterId: localStorage.getItem("characterId") || "giko",
     isLoggingIn: false,
     areaId: localStorage.getItem("areaId") ||"gen", // 'gen' or 'for'
-    
+
     // canvas
     canvasContext: null as CanvasRenderingContext2D | null,
     isRedrawRequired: false,
     isUsernameRedrawRequired: false,
     isDraggingCanvas: false,
-    canvasPointerStartState: null,
+    canvasPointerStartState: null as {
+        dist: number | null,
+        pos: { x: number, y: number }
+    } | null,
     canvasDragStartOffset: null as { x: number, y: number } | null,
     canvasManualOffset: { x: 0, y: 0 },
     canvasGlobalOffset: { x: 0, y: 0 },
@@ -609,19 +618,29 @@ export default defineComponent({
     blockHeight: BLOCK_HEIGHT,
     devicePixelRatio: 1,
     backgroundImage: null as RenderCache | null,
-    canvasObjects: null as any,
+    canvasObjects: null as ({
+                                o: RoomObject,
+                                type: "room-object",
+                                priority: number,
+                            }
+                            | {
+                                o: User,
+                                type: "user",
+                                priority: number,
+                            })[]
+                            | null,
 
     // rula stuff
     isRulaPopupOpen: false,
-    roomList: [],
-    lastRoomListSortKey: localStorage.getItem("lastRoomListSortKey") || "sortName",
-    lastRoomListSortDirection: localStorage.getItem("lastRoomListSortDirection") || 1,
+    roomList: [] as RoomListItem[],
+    lastRoomListSortKey: (localStorage.getItem("lastRoomListSortKey") || "sortName") as "sortName" | "userCount" | "streamerCount",
+    lastRoomListSortDirection: Number(localStorage.getItem("lastRoomListSortDirection") || 1),
     rulaRoomSelection: null as string | null,
 
     // user list stuff
     isUserListPopupOpen: false,
     ignoredUserIds: new Set(),
-    
+
     // preferences stuff
     isPreferencesPopupOpen: false,
     showUsernameBackground: localStorage.getItem("showUsernameBackground") != "false",
@@ -642,15 +661,15 @@ export default defineComponent({
     isNameMentionSoundEnabled: localStorage.getItem("isNameMentionSoundEnabled") == "true",
     customMentionSoundPattern: localStorage.getItem("customMentionSoundPattern") || "",
     mentionSoundFunction: null as ((msg: string) => boolean) | null,
-    
+
     // streaming
     streams: [] as StreamSlotDto[],
     mediaStream: null as MediaStream | null,
     streamSlotIdInWhichIWantToStream: null as number | null,
-    rtcPeerSlots: [] as {
+    rtcPeerSlots: [] as ({
         attempts: 0,
         rtcPeer: RTCPeer | null,
-    }[] | null[],
+    } | null)[],
     takenStreams: [] as boolean[], // streams taken by me
     slotVolume: JSON.parse(localStorage.getItem("slotVolume") || "{}"), // key: slot Id / value: volume
     slotCompression: [] as boolean[],
@@ -658,7 +677,7 @@ export default defineComponent({
 
     // stream settings
     isStreamPopupOpen: false,
-    streamMode: "video_sound",
+    streamMode: "video_sound" as "video_sound" | "video" | "sound",
     displayAdvancedStreamSettings: false,
     streamEchoCancellation: false,
     streamNoiseSuppression: false,
@@ -705,12 +724,13 @@ export default defineComponent({
     chessboardState: {},
 
     loadCharacterImagesPromise: null as Promise<void[]> | null,
-    isCanvasPointerDown: false
+    isCanvasPointerDown: false,
+    lastSetMovementDirectionTime: Date.now(),
   }),
   mounted() {
-    console.log("%c(,,ﾟДﾟ)", 
+    console.log("%c(,,ﾟДﾟ)",
                 "background-color: white; color: black; font-weight: bold; padding: 4px 6px; font-size: 50px",);
-    
+
     window.addEventListener("keydown", (ev) =>
     {
         if (ev.shiftKey && ev.ctrlKey && ev.code == "Digit9")
@@ -754,7 +774,7 @@ export default defineComponent({
 
     this.loadCharacterImagesPromise = loadCharacters(this.isCrispModeEnabled);
 
-    // Enable dark mode stylesheet (gotta do it here in the "mounted" event because otherwise 
+    // Enable dark mode stylesheet (gotta do it here in the "mounted" event because otherwise
     // the screen will flash dark for a bit while loading the page)
     for (let i = 0; i < document.styleSheets.length; i++)
             if (document.styleSheets[i].title == "dark-mode-sheet")
@@ -777,9 +797,9 @@ export default defineComponent({
             })
         }
     }
-    
+
     this.setMentionSoundFunction()
-    
+
     this.devicePixelRatio = this.getDevicePixelRatio();
   },
   methods: {
@@ -831,7 +851,7 @@ export default defineComponent({
             this.soundEffectVolume = Number(localStorage.getItem(this.areaId + "soundEffectVolume") || 0)
 
             this.updateAudioElementsVolume()
-            
+
             if (window.Notification)
             {
                 if (Notification.permission == "granted")
@@ -878,18 +898,18 @@ export default defineComponent({
             const ISAC = await isWebrtcReceiveCodecSupported(WebrtcCodec.ISAC);
 
             logToServer(this.myUserID + " RECEIVE CODECS: VP8: " + VP8 + " VP9: " + VP9 + " H264: " + H264 + " OPUS: " + OPUS + " ISAC: " + ISAC)
-    
+
         }
         catch (e)
         {
             console.error(e, e.stack)
             if (e instanceof UserException)
             {
-                alert(i18n.t("msg." + e.message))
+                alert(this.$t("msg." + e.message))
             }
             else
             {
-                alert(i18n.t("msg.unknown_error"))
+                alert(this.$t("msg.unknown_error"))
             }
             window.location.reload();
         }
@@ -902,13 +922,14 @@ export default defineComponent({
     {
         this.loadRoomBackground();
         this.loadRoomObjects();
-        
+
         await (loadCharacters(this.isCrispModeEnabled));
         this.isRedrawRequired = true;
     },
     setLanguage: function (code: string)
     {
-        i18n.locale = code;
+        if (this.$root)
+            this.$root.$i18n.locale = code
     },
     showWarningToast: function (text: string)
     {
@@ -922,11 +943,11 @@ export default defineComponent({
     loadRoomBackground: async function ()
     {
         const urlMode = (!this.getSVGMode() ? "" : "." + this.getSVGMode());
-        
+
         const roomLoadId = this.roomLoadId;
-        
+
         const image = await loadImage(this.currentRoom!.backgroundImageUrl.replace(".svg", urlMode + ".svg"))
-        
+
         if (this.roomLoadId != roomLoadId) return;
 
         this.backgroundImage = RenderCache.Image(image, this.currentRoom!.scale);
@@ -935,9 +956,9 @@ export default defineComponent({
     loadRoomObjects: async function ()
     {
         const urlMode = (!this.getSVGMode() ? "" : "." + this.getSVGMode());
-        
+
         const roomLoadId = this.roomLoadId;
-        
+
         await Promise.all(Object.values(this.currentRoom!.objects).map((o: RoomObject) =>
             loadImage("rooms/" + this.currentRoom!.id + "/" + o.url.replace(".svg", urlMode + ".svg"))
                 .then((image) =>
@@ -945,7 +966,7 @@ export default defineComponent({
                 const scale = o.scale ? o.scale : 1;
                 if (this.roomLoadId != roomLoadId) return;
                 o.image = RenderCache.Image(image, scale);
-                
+
                 o.physicalPositionX = o.offset ? o.offset.x * scale : 0
                 o.physicalPositionY = o.offset ? o.offset.y * scale : 0
                 this.isRedrawRequired = true;
@@ -965,25 +986,25 @@ export default defineComponent({
 
         if (this.currentRoom!.needsFixedCamera)
             this.canvasManualOffset = { x: 0, y: 0 }
-        
+
         const previousRoomId = this.currentRoom && this.currentRoom.id
         this.currentRoom = roomDto;
-        
+
         this.users = {};
 
         for (const u of usersDto)
         {
             const user = this.addUser(u);
-            
+
             if (previousRoomId != this.currentRoom.id && user.message)
             {
                 this.displayUserMessage(user, user.message);
             }
         }
-        
+
         this.loadRoomBackground();
         this.loadRoomObjects();
-        
+
         this.blockWidth = this.currentRoom.blockWidth ? this.currentRoom.blockWidth : BLOCK_WIDTH;
         this.blockHeight = this.currentRoom.blockHeight ? this.currentRoom.blockHeight : BLOCK_HEIGHT;
 
@@ -1007,19 +1028,19 @@ export default defineComponent({
         });
 
         const loginMessage = await loginResponse.json();
-        
+
         if (!loginMessage.isLoginSuccessful) throw new UserException(loginMessage.error);
-        
+
         this.myUserID = loginMessage.userId;
         this.myPrivateUserID = loginMessage.privateUserId;
 
-        logToServer(new Date() + " " + this.myUserID 
+        logToServer(new Date() + " " + this.myUserID
                     + " window.EXPECTED_SERVER_VERSION: "+ window.EXPECTED_SERVER_VERSION
-                    + " loginMessage.appVersion: " + loginMessage.appVersion 
+                    + " loginMessage.appVersion: " + loginMessage.appVersion
                     + " DIFFERENT: " + (window.EXPECTED_SERVER_VERSION != loginMessage.appVersion))
         if (window.EXPECTED_SERVER_VERSION != loginMessage.appVersion)
             this.pageRefreshRequired = true
-        
+
         // prevent accidental page closing
         window.onbeforeunload = () => {
             // Before onbeforeunload the socket has already died, so
@@ -1028,14 +1049,14 @@ export default defineComponent({
             this.initializeSocket();
             return "Are you sure?";
         }
-        
+
         // load the room state before connecting the websocket, so that all
         // code handling websocket events (and paint() events) can assume that
         // currentRoom, streams etc... are all defined
 
         const response = await fetch("/areas/" + this.areaId + "/rooms/admin_st")
         this.updateRoomState(await response.json())
-        
+
         logToServer(new Date() + " " + this.myUserID + " User agent: " + navigator.userAgent)
 
         this.initializeSocket()
@@ -1106,7 +1127,7 @@ export default defineComponent({
 
         this.socket.on("server-system-message", (messageCode) =>
         {
-            this.writeMessageToLog("SYSTEM", i18n.t(messageCode), null)
+            this.writeMessageToLog("SYSTEM", this.$t(messageCode), null)
         });
 
         this.socket.on("server-stats", (serverStats) =>
@@ -1126,7 +1147,7 @@ export default defineComponent({
             const oldY = user.logicalPositionY;
 
             if (isInstant)
-                user.moveImmediatelyToPosition(this.currentRoom, x, y, direction);
+                user.moveImmediatelyToPosition(this.currentRoom!, x, y, direction);
             else user.moveToPosition(x, y, direction);
 
             if (userId == this.myUserID)
@@ -1138,7 +1159,7 @@ export default defineComponent({
                 user.makeSpin()
             this.updateCanvasObjects();
         });
-        
+
         this.socket.on("server-bubble-position", (userId, position) =>
         {
             const user = this.users[userId];
@@ -1188,7 +1209,7 @@ export default defineComponent({
         {
             this.wantToStream = false;
             this.stopStreaming();
-            this.showWarningToast(i18n.t("msg." + reason));
+            this.showWarningToast(this.$t("msg." + reason));
         });
         this.socket.on("server-not-ok-to-take-stream", (streamSlotId) =>
         {
@@ -1204,14 +1225,16 @@ export default defineComponent({
             this.updateCurrentRoomStreams(streams);
         });
 
-        this.socket.on("server-room-list", async (roomList) =>
+        this.socket.on("server-room-list", async (roomList: RoomListItemDto[]) =>
         {
-            roomList.forEach(r => {
-                r.sortName = i18n.t("room." + r.id, {reading: true});
-                r.streamerCount = r.streamers.length;
-                r.streamerDisplayNames = r.streamers.map(s => this.toDisplayName(s))
-            })
-            this.roomList = roomList;
+            this.roomList = roomList.map(r => ({
+                id: r.id,
+                userCount: r.userCount,
+                streamers: r.streamers,
+                sortName: this.$t("room." + r.id, {reading: true}),
+                streamerCount: r.streamers.length,
+                streamerDisplayNames: r.streamers.map(s => this.toDisplayName(s)),
+            }));
             this.sortRoomList(this.lastRoomListSortKey, this.lastRoomListSortDirection)
             this.isRulaPopupOpen = true;
 
@@ -1219,10 +1242,10 @@ export default defineComponent({
             document.getElementById("rula-popup")!.focus()
         });
 
-        this.socket.on("server-rtc-message", async (streamSlotId, type, msg) =>
+        this.socket.on("server-rtc-message", async (streamSlotId: number, type, msg) =>
         {
             console.log("server-rtc-message", streamSlotId, type, msg);
-            const rtcPeer = this.rtcPeerSlots[streamSlotId].rtcPeer;
+            const rtcPeer = this.rtcPeerSlots[streamSlotId]!.rtcPeer;
             if (rtcPeer === null) return;
             if(type == "offer")
             {
@@ -1252,13 +1275,13 @@ export default defineComponent({
         this.socket.on("server-chess-win", winnerUserId => {
             const winnerUserName = this.toDisplayName(this.users[winnerUserId] ? this.users[winnerUserId].name : "N/A")
 
-            this.writeMessageToLog("SYSTEM", i18n.t("msg.chess_win").replace("@USER_NAME@", winnerUserName), null)
+            this.writeMessageToLog("SYSTEM", this.$t("msg.chess_win").replace("@USER_NAME@", winnerUserName), null)
         })
 
         this.socket.on("server-chess-quit", winnerUserId => {
             const winnerUserName = this.toDisplayName(this.users[winnerUserId] ? this.users[winnerUserId].name : "N/A")
 
-            this.writeMessageToLog("SYSTEM", i18n.t("msg.chess_quit").replace("@USER_NAME@", winnerUserName), null)
+            this.writeMessageToLog("SYSTEM", this.$t("msg.chess_quit").replace("@USER_NAME@", winnerUserName), null)
         })
     },
     addUser: function (userDTO: PlayerDto): User
@@ -1275,12 +1298,12 @@ export default defineComponent({
         newUser.bubblePosition = userDTO.bubblePosition;
         newUser.id = userDTO.id;
         newUser.voicePitch = userDTO.voicePitch
-        
+
         this.users[userDTO.id] = newUser;
 
         return newUser;
     },
-    writeMessageToLog: function(userName: string, msg: string, userId: string)
+    writeMessageToLog: function(userName: string, msg: string, userId: string | null)
     {
         const chatLog = document.getElementById("chatLog")!;
         const isAtBottom = (chatLog.scrollHeight - chatLog.clientHeight) - chatLog.scrollTop < 5;
@@ -1288,10 +1311,11 @@ export default defineComponent({
         const messageDiv = document.createElement("div");
         messageDiv.classList.add("message");
 
-        messageDiv.dataset.userId = userId
+        if (userId)
+            messageDiv.dataset.userId = userId
         if (userId && userId == this.highlightedUserId)
             messageDiv.classList.add("highlighted-message")
-        
+
         if (!userId && userName == "SYSTEM")
             messageDiv.classList.add("system-message")
 
@@ -1308,7 +1332,7 @@ export default defineComponent({
         authorSpan.addEventListener("click", (ev) => {
             this.highlightUser(userId, this.toDisplayName(userName))
         })
-        
+
         const tripcodeSpan = document.createElement("span");
         if (tripcode)
         {
@@ -1339,7 +1363,7 @@ export default defineComponent({
         messageDiv.append(timestampSpan);
         messageDiv.append(authorSpan);
         messageDiv.append(tripcodeSpan);
-        messageDiv.append(document.createTextNode(i18n.t("message_colon")));
+        messageDiv.append(document.createTextNode(this.$t("message_colon")));
         messageDiv.append(bodySpan);
 
         chatLog.appendChild(messageDiv);
@@ -1355,7 +1379,7 @@ export default defineComponent({
             return;
 
         const plainMsg = msg.replace(urlRegex, s => safeDecodeURI(s));
-        
+
         user.message = plainMsg;
         if(user.lastMessage != user.message)
         {
@@ -1363,9 +1387,9 @@ export default defineComponent({
             this.isRedrawRequired = true;
             user.lastMessage = user.message;
         }
-        
+
         if(!user.message) return;
-        
+
         if (this.soundEffectVolume > 0)
         {
             if (this.mentionSoundFunction &&
@@ -1387,7 +1411,7 @@ export default defineComponent({
         {
             speak(plainMsg, this.ttsVoiceURI, this.voiceVolume, user.voicePitch)
         }
-        
+
         if (window.Notification)
         {
             if (!this.showNotifications
@@ -1396,7 +1420,7 @@ export default defineComponent({
 
             const permission = await requestNotificationPermission()
             if (permission != "granted") return;
-            
+
             const character = user.character
             new Notification(this.toDisplayName(user.name) + ": " + plainMsg,
             {
@@ -1407,7 +1431,7 @@ export default defineComponent({
     toDisplayName: function (name: string)
     {
         if (name == "")
-            return i18n.t("default_user_name");
+            return this.$t("default_user_name");
         return name;
     },
     drawImage: function (context: CanvasRenderingContext2D, image: HTMLCanvasElement, x: number = 0, y: number = 0)
@@ -1424,10 +1448,10 @@ export default defineComponent({
 
         const lineHeight = 13
         const height = lineHeight * (tripcode && displayName ? 2 : 1) + 3;
-        
+
         const fontPrefix = "bold ";
         const fontSuffix = "px Arial, Helvetica, sans-serif";
-        
+
         return new RenderCache(function(canvas: HTMLCanvasElement, scale: number)
         {
             const context = canvas.getContext('2d')!;
@@ -1437,7 +1461,7 @@ export default defineComponent({
                 displayName ? Math.ceil(context.measureText(displayName).width) : 0,
                 tripcode ? Math.ceil(context.measureText("◆" + tripcode).width) : 0,
             ) + 5;
-            
+
             canvas.width = width * scale;
             canvas.height = height * scale;
 
@@ -1456,7 +1480,7 @@ export default defineComponent({
             context.textBaseline = "middle";
             context.textAlign = "center"
             context.fillStyle = "blue";
-            
+
             if (tripcode && displayName)
             {
                 // I don't quite understand why 0.25 works but 0.333 doesn't
@@ -1467,7 +1491,7 @@ export default defineComponent({
             {
                 context.fillText(displayName ? displayName : "◆" + tripcode, canvas.width/2, canvas.height/2 + 1 * scale);
             }
-            
+
             return [width, height];
         });
     },
@@ -1477,29 +1501,29 @@ export default defineComponent({
         const lineHeight = 15;
         const fontHeight = 13;
         const fontSuffix = "px IPAMonaPGothic,'IPA モナー Pゴシック',Monapo,Mona,'MS PGothic','ＭＳ Ｐゴシック',submona,sans-serif";
-        
+
         const boxArrowOffset = 5;
         const boxMargin = 6;
         const boxPadding = [5, 3];
-        
+
         let messageLines: string[] = user.message!.split(/\r\n|\n\r|\n|\r/);
         let preparedLines = null as string[] | null;
         let textWidth = 0;
-        
+
         const arrowCorner = [
             ["down", "left"].includes(user.bubblePosition),
             ["up", "left"].includes(user.bubblePosition)];
-        
+
         return new RenderCache((canvas: HTMLCanvasElement, scale: number) =>
         {
             const context = canvas.getContext('2d')!;
             context.font = fontHeight + fontSuffix;
-            
+
             if (preparedLines === null)
             {
                 preparedLines = [];
                 textWidth = 0;
-                
+
                 while (messageLines.length && preparedLines.length < 5)
                 {
                     const line = messageLines.shift()!
@@ -1527,28 +1551,27 @@ export default defineComponent({
                     textWidth = Math.max(textWidth, lastLineWidth);
                 }
             }
-            
+
             const boxWidth = textWidth + 2 * boxPadding[0];
             const boxHeight = preparedLines.length * lineHeight + 2 * boxPadding[1];
-            
-            
+
             const sLineHeight = lineHeight * scale
             const sFontHeight = fontHeight * scale;
-            
+
             const sBoxArrowOffset = boxArrowOffset * scale;
             const sBoxMargin = boxMargin * scale;
             const sBoxPadding = [boxPadding[0] * scale, boxPadding[1] * scale];
-            
+
             const sBoxWidth = boxWidth * scale
             const sBoxHeight = boxHeight * scale
-            
+
             canvas.width = sBoxWidth + sBoxMargin;
             canvas.height = sBoxHeight + sBoxMargin;
-            
+
             context.fillStyle = 'rgba(255, 255, 255, ' + (this.bubbleOpacity/100) +　')';
-            
+
             context.beginPath();
-            
+
             // arrow
             context.moveTo(
                 (arrowCorner[0] ? sBoxWidth : sBoxMargin),
@@ -1559,7 +1582,7 @@ export default defineComponent({
             context.lineTo(
                 (arrowCorner[0] ? sBoxWidth - sBoxArrowOffset : sBoxMargin + sBoxArrowOffset),
                 (arrowCorner[1] ? sBoxHeight : sBoxMargin));
-            
+
             // bubble corners
             context.lineTo(
                 (arrowCorner[0] ? 0 : sBoxWidth + sBoxMargin),
@@ -1570,32 +1593,32 @@ export default defineComponent({
             context.lineTo(
                 (arrowCorner[0] ? sBoxWidth : sBoxMargin),
                 (arrowCorner[1] ? 0 : sBoxHeight + sBoxMargin));
-            
+
             context.closePath();
             context.fill();
-            
+
             context.font = sFontHeight + fontSuffix;
             context.textBaseline = "middle";
             context.textAlign = "left"
             context.fillStyle = "black";
-            
+
             for (let i=0; i<preparedLines.length; i++)
             {
                 context.fillText(preparedLines[i],
-                    !arrowCorner[0] * sBoxMargin + sBoxPadding[0],
-                    !arrowCorner[1] * sBoxMargin + sBoxPadding[1] + (i*sLineHeight) + (sLineHeight/2));
+                    (arrowCorner[0] ? 0 : sBoxMargin) + sBoxPadding[0],
+                    (arrowCorner[1] ? 0 : sBoxMargin) + sBoxPadding[1] + (i*sLineHeight) + (sLineHeight/2));
             }
-            
+
             return [boxWidth + boxMargin, boxHeight + boxMargin]
         });
     },
     detectCanvasResize: function ()
     {
         const devicePixelRatio = this.getDevicePixelRatio();
-        
+
         const offsetWidth = this.canvasContext!.canvas.offsetWidth * devicePixelRatio;
         const offsetHeight = this.canvasContext!.canvas.offsetHeight * devicePixelRatio
-        
+
         if (this.canvasDimensions.w != offsetWidth ||
             this.canvasDimensions.h != offsetHeight ||
             this.devicePixelRatio != devicePixelRatio)
@@ -1605,7 +1628,7 @@ export default defineComponent({
 
             this.canvasContext!.canvas.width = this.canvasDimensions.w;
             this.canvasContext!.canvas.height = this.canvasDimensions.h;
-            
+
             this.devicePixelRatio = devicePixelRatio
         }
     },
@@ -1619,60 +1642,60 @@ export default defineComponent({
             this.canvasGlobalOffset.y = this.getCanvasScale() * -fixedCameraOffset.y
             return;
         }
-        
+
         const userOffset = { x: 0, y: 0 };
         if (this.myUserID! in this.users)
         {
             const user = this.users[this.myUserID!]
-            
+
             userOffset.x -= this.getCanvasScale() * (user.currentPhysicalPositionX + this.blockWidth/2) - this.canvasDimensions.w / 2,
             userOffset.y -= this.getCanvasScale() * (user.currentPhysicalPositionY - 60) - this.canvasDimensions.h / 2
         }
-        
+
         const manualOffset = {
             x: this.userCanvasScale * this.canvasManualOffset.x,
             y: this.userCanvasScale * this.canvasManualOffset.y
         }
-        
+
         const canvasOffset = {
             x: manualOffset.x + userOffset.x,
             y: manualOffset.y + userOffset.y
         };
-        
+
         const backgroundImage = this.backgroundImage!.getImage(this.getCanvasScale())
-        
+
         const bcDiff =
         {
             w: backgroundImage.width - this.canvasDimensions.w,
             h: backgroundImage.height - this.canvasDimensions.h
         }
-        
+
         const margin = (this.currentRoom!.isBackgroundImageOffsetEdge ?
             {w: 0, h: 0} : this.canvasDimensions);
-        
+
         let isAtEdge = false;
-        
+
         if (canvasOffset.x > margin.w)
             {isAtEdge = true; manualOffset.x = margin.w - userOffset.x}
         else if(canvasOffset.x < -margin.w - bcDiff.w)
             {isAtEdge = true; manualOffset.x = -margin.w - (bcDiff.w + userOffset.x)}
-        
+
         if (canvasOffset.y > margin.h)
             {isAtEdge = true; manualOffset.y = margin.h - userOffset.y}
         else if(canvasOffset.y < -margin.h - bcDiff.h)
             {isAtEdge = true; manualOffset.y = -margin.h - (bcDiff.h + userOffset.y)}
-        
+
         if (isAtEdge)
         {
             canvasOffset.x = manualOffset.x + userOffset.x
             canvasOffset.y = manualOffset.y + userOffset.y
             this.isCanvasPointerDown = false;
         }
-        
+
         this.canvasGlobalOffset.x = canvasOffset.x;
         this.canvasGlobalOffset.y = canvasOffset.y;
     },
-    
+
     calculateUserPhysicalPositions: function (delta: number)
     {
         for (const id in this.users)
@@ -1680,7 +1703,7 @@ export default defineComponent({
             this.users[id].calculatePhysicalPosition(this.currentRoom!, delta);
         }
     },
-    
+
     updateCanvasObjects: function ()
     {
         this.canvasObjects = this.currentRoom!.objects
@@ -1705,29 +1728,29 @@ export default defineComponent({
     paintBackground: function ()
     {
         const context = this.canvasContext!;
-        
+
         if (this.currentRoom!.backgroundColor)
             context.fillStyle = this.currentRoom!.backgroundColor;
         else
             context.fillStyle = this.isDarkMode ? "#354F52" : "#b0b0b0";
         context.fillRect(0, 0, this.canvasDimensions.w, this.canvasDimensions.h);
-        
+
         this.drawImage(
             context,
             this.backgroundImage!.getImage(this.getCanvasScale())
         );
     },
-    
+
     drawObjects: function ()
     {
         const context = this.canvasContext!;
-        
-        for (const o of this.canvasObjects)
+
+        for (const o of this.canvasObjects!)
         {
             if (o.type == "room-object")
             {
                 if (!o.o.image) continue;
-                
+
                 this.drawImage(
                     context,
                     o.o.image.getImage(this.getCanvasScale()),
@@ -1741,43 +1764,46 @@ export default defineComponent({
                 if (this.ignoredUserIds.has(o.o.id)) continue
 
                 context.save();
-                
+
                 if (o.o.isInactive)
                     context.globalAlpha = 0.5
-                
-                const renderImage = o.o.getCurrentImage(this.currentRoom);
+
+                const renderImage = o.o.getCurrentImage(this.currentRoom!);
                 this.drawImage(
                     context,
                     renderImage.getImage(this.getCanvasScale()),
                     o.o.currentPhysicalPositionX + this.blockWidth/2 - renderImage.width/2,
                     o.o.currentPhysicalPositionY - renderImage.height
                 );
-                
+
                 context.restore()
             }
         }
     },
-    
+
     drawUsernames: function ()
     {
-        for (const o of this.canvasObjects.filter(o => o.type == "user" && !this.ignoredUserIds.has(o.o.id)))
+        for (const o of this.canvasObjects!.filter(o => o.type == "user" && !this.ignoredUserIds.has(o.o.id)))
         {
-            if (o.o.nameImage == null || this.isUsernameRedrawRequired)
-                o.o.nameImage = this.getNameImage(this.toDisplayName(o.o.name), this.showUsernameBackground);
-            
-            const image = o.o.nameImage.getImage(this.getCanvasScale())
-            
-            this.drawImage(
-                this.canvasContext,
-                image,
-                o.o.currentPhysicalPositionX + this.blockWidth/2 - o.o.nameImage.width/2,
-                o.o.currentPhysicalPositionY - 120
-            );
+            if (o.type == "user" && !this.ignoredUserIds.has(o.o.id))
+            {
+                if (o.o.nameImage == null || this.isUsernameRedrawRequired)
+                    o.o.nameImage = this.getNameImage(this.toDisplayName(o.o.name), this.showUsernameBackground);
+
+                const image = o.o.nameImage.getImage(this.getCanvasScale())
+
+                this.drawImage(
+                    this.canvasContext!,
+                    image,
+                    o.o.currentPhysicalPositionX + this.blockWidth/2 - o.o.nameImage.width/2,
+                    o.o.currentPhysicalPositionY - 120
+                );
+            }
         }
         if (this.isUsernameRedrawRequired)
             this.isUsernameRedrawRequired = false;
     },
-    
+
     resetBubbleImages: function ()
     {
         for (const u in this.users)
@@ -1788,75 +1814,78 @@ export default defineComponent({
     },
     drawBubbles: function()
     {
-        for (const o of this.canvasObjects.filter(o => o.type == "user" && !this.ignoredUserIds.has(o.o.id)))
+        for (const o of this.canvasObjects!)
         {
-            const user = o.o;
-            
-            if (!user.message) continue;
-            
-            if (user.bubbleImage == null)
-                user.bubbleImage = this.getBubbleImage(user)
-            
-            const image = user.bubbleImage.getImage(this.getCanvasScale())
-            
-            const pos = [
-                ["up", "right"].includes(user.bubblePosition),
-                ["down", "right"].includes(user.bubblePosition)];
-            
-            this.drawImage(
-                this.canvasContext,
-                image,
-                user.currentPhysicalPositionX + this.blockWidth/2
-                    + (pos[0] ? 21 : -21 - user.bubbleImage.width),
-                user.currentPhysicalPositionY
-                    - (pos[1] ? 62 : 70 + user.bubbleImage.height)
-            );
+            if (o.type == "user" && !this.ignoredUserIds.has(o.o.id))
+            {
+                const user = o.o;
+
+                if (!user.message) continue;
+
+                if (user.bubbleImage == null)
+                    user.bubbleImage = this.getBubbleImage(user)
+
+                const image = user.bubbleImage.getImage(this.getCanvasScale())
+
+                const pos = [
+                    ["up", "right"].includes(user.bubblePosition),
+                    ["down", "right"].includes(user.bubblePosition)];
+
+                this.drawImage(
+                    this.canvasContext!,
+                    image,
+                    user.currentPhysicalPositionX + this.blockWidth/2
+                        + (pos[0] ? 21 : -21 - user.bubbleImage.width),
+                    user.currentPhysicalPositionY
+                        - (pos[1] ? 62 : 70 + user.bubbleImage.height)
+                );
+            }
         }
     },
-    
+
     drawOriginLines: function ()
     {
         const context = this.canvasContext!;
-        
+
         context.strokeStyle = "#ff0000";
-            
+
         const co = this.canvasGlobalOffset;
-        
+
         context.beginPath();
         context.moveTo(co.x+11, co.y-1);
         context.lineTo(co.x-1, co.y-1);
         context.lineTo(co.x-1, co.y+10);
         context.stroke();
-        
+
         const origin = calculateRealCoordinates(this.currentRoom!, 0, 0)
-        
+
         const cr_x = co.x+origin.x;
         const cr_y = co.y+origin.y;
-        
+
         context.beginPath();
         context.rect(cr_x-1, cr_y+1, this.blockWidth+2, -this.blockHeight-2);
         context.stroke();
-        
+
         const cc_x = co.x+this.currentRoom!.originCoordinates.x;
         const cc_y = co.y+this.currentRoom!.originCoordinates.y;
-        
+
         context.strokeStyle = "#0000ff";
-        
+
         context.beginPath();
         context.moveTo(co.x-1, co.y);
         context.lineTo(cc_x, co.y);
         context.lineTo(cc_x, cc_y);
         context.stroke();
     },
-    
+
     drawGridNumbers: function ()
     {
         const context = this.canvasContext!;
-        
+
         context.font = "bold 13px Arial, Helvetica, sans-serif";
         context.textBaseline = "bottom";
         context.textAlign = "center";
-        
+
         for (let x = 0; x < this.currentRoom!.size.x; x++)
             for (let y = 0; y < this.currentRoom!.size.y; y++)
             {
@@ -1879,7 +1908,7 @@ export default defineComponent({
                 );
             }
     },
-    
+
     paint: function (delta: number)
     {
         if (this.isLoadingRoom || !this.backgroundImage)
@@ -1890,7 +1919,7 @@ export default defineComponent({
         const usersRequiringRedraw = [];
         for (const [userId, user] of Object.entries(this.users))
             if (user.checkIfRedrawRequired()) usersRequiringRedraw.push(userId);
-        
+
         if (this.isRedrawRequired
             || this.isDraggingCanvas
             || usersRequiringRedraw.length
@@ -1935,18 +1964,18 @@ export default defineComponent({
 
         const door = Object.values(this.currentRoom!.doors).find(
             (d) =>
-                d.target !== null &&
                 d.x == currentUser.logicalPositionX &&
                 d.y == currentUser.logicalPositionY
         );
 
         if (!door) return;
+        if (door.target == null) return;
 
         const { roomId, doorId } = door.target;
 
         this.changeRoom(roomId, doorId);
     },
-    changeRoom: function (targetRoomId: string, targetDoorId: string)
+    changeRoom: function (targetRoomId: string, targetDoorId?: string)
     {
         if (this.mediaStream) this.stopStreaming();
         for (let i = 0; i < this.takenStreams.length; i++)
@@ -1955,7 +1984,7 @@ export default defineComponent({
             // when going to a new room, all streams must be off by default
             this.takenStreams[i] = false
             this.slotCompression[i] = false
-            
+
             if (this.audioProcessors[i])
             {
                 this.audioProcessors[i].dispose()
@@ -2025,7 +2054,7 @@ export default defineComponent({
         // Ping so that if my avatar was transparent, it turns back to normal.
         // Use debounce so that we never send more than one ping every 10 minutes
         const debouncedPing = debounceWithImmediateExecution(() => {
-            this.socket!.emit("user-ping"); 
+            this.socket!.emit("user-ping");
         }, 10 * 60 * 1000)
 
         window.addEventListener("focus", () => {
@@ -2039,13 +2068,13 @@ export default defineComponent({
         window.addEventListener("keydown", () => {
             debouncedPing()
         });
-        
-        const pointerEnd = (e) =>
+
+        const pointerEnd = () =>
         {
             this.isDraggingCanvas = false;
             this.isCanvasPointerDown = false;
         }
-        
+
         window.addEventListener('mouseup', pointerEnd);
         window.addEventListener('touchend', pointerEnd);
         window.addEventListener('touchcancel', pointerEnd);
@@ -2192,14 +2221,14 @@ export default defineComponent({
 
         // Debounce needed because sometimes this function is called by by the event mousedown, sometimes
         // by touchstart but sometimes both, and in the latter case I don't want to call this.sendNewPositionToServer() twice.
-        if (this.lastSetMovementDirectionTime || Date.now() - this.lastSetMovementDirectionTime > 200)
+        if (Date.now() - this.lastSetMovementDirectionTime > 200)
         {
             this.lastSetMovementDirectionTime = Date.now()
             if (this.movementDirection)
                 this.sendNewPositionToServer(this.movementDirection)
         }
     },
-    getPointerState: function (event)
+    getPointerState: function (event: MouseEvent | TouchEvent)
     {
         if ("targetTouches" in event)
         {
@@ -2227,38 +2256,39 @@ export default defineComponent({
             }
         }
     },
-    handleCanvasPointerDown: function (event)
+    handleCanvasPointerDown: function (event: MouseEvent | TouchEvent)
     {
         const state = this.getPointerState(event);
         if (!state) return;
-        
+
         this.isCanvasPointerDown = true;
         this.canvasDragStartOffset = { x: this.canvasManualOffset.x, y: this.canvasManualOffset.y };
         this.canvasPointerStartState = state;
         this.userCanvasScaleStart = null;
-        
+
         event.preventDefault();
-        event.target.focus()
+        const target = event.target as HTMLElement
+        target.focus()
     },
-    handleCanvasPointerMove: function (event)
+    handleCanvasPointerMove: function (event: MouseEvent | TouchEvent)
     {
         if (!this.isCanvasPointerDown) return;
-        
+
         const state = this.getPointerState(event);
         if (!state) return;
 
         const dragOffset = {
-            x: -(this.canvasPointerStartState.pos.x - state.pos.x),
-            y: -(this.canvasPointerStartState.pos.y - state.pos.y)
+            x: -(this.canvasPointerStartState!.pos.x - state.pos.x),
+            y: -(this.canvasPointerStartState!.pos.y - state.pos.y)
         };
-        
+
         if (state.dist)
         {
-            const distDiff = this.canvasPointerStartState.dist - state.dist;
-            
+            const distDiff = this.canvasPointerStartState!.dist! - state.dist;
+
             if (!this.userCanvasScaleStart && Math.abs(distDiff) > 40)
                 this.userCanvasScaleStart = this.userCanvasScale;
-            
+
             if (this.userCanvasScaleStart)
                 this.setCanvasScale(this.userCanvasScaleStart - Math.round(distDiff/20)/10);
         }
@@ -2271,13 +2301,13 @@ export default defineComponent({
 
         if (this.isDraggingCanvas)
         {
-            this.canvasManualOffset.x = this.canvasDragStartOffset.x + dragOffset.x / this.userCanvasScale
-            this.canvasManualOffset.y = this.canvasDragStartOffset.y + dragOffset.y / this.userCanvasScale;
+            this.canvasManualOffset.x = this.canvasDragStartOffset!.x + dragOffset.x / this.userCanvasScale
+            this.canvasManualOffset.y = this.canvasDragStartOffset!.y + dragOffset.y / this.userCanvasScale;
         }
-        
+
         event.preventDefault();
     },
-    handleMessageInputKeydown: function (event)
+    handleMessageInputKeydown: function (event: KeyboardEvent)
     {
         if (event.code == "KeyG" && event.ctrlKey)
         {
@@ -2289,7 +2319,7 @@ export default defineComponent({
             return
         }
     },
-    handleMessageInputKeypress: function (event)
+    handleMessageInputKeypress: function (event: KeyboardEvent)
     {
         if (event.key != "Enter"
             || (this.isNewlineOnShiftEnter && event.shiftKey)
@@ -2314,7 +2344,7 @@ export default defineComponent({
             this.zoomIn()
         else
             this.zoomOut()
-    
+
         event.preventDefault();
         return false;
     },
@@ -2324,16 +2354,16 @@ export default defineComponent({
             canvasScale = 3;
         else if(canvasScale < 0.70)
             canvasScale = 0.70;
-        
+
         this.userCanvasScale = canvasScale;
         this.isRedrawRequired = true;
     },
-    
+
     getCanvasScale: function ()
     {
         return this.userCanvasScale * this.devicePixelRatio;
     },
-    
+
     getDevicePixelRatio: function ()
     {
         if (this.isLowQualityEnabled) return 1;
@@ -2350,7 +2380,7 @@ export default defineComponent({
             this.socket!.emit("user-rtc-message", {
                 streamSlotId: slotId, type, msg})
         });
-        
+
         const reconnect = () =>
         {
             if (slotId == this.streamSlotIdInWhichIWantToStream)
@@ -2367,9 +2397,9 @@ export default defineComponent({
             else
             {
                 console.log("Stream connection closed")
-            } 
+            }
         };
-        
+
         const terminate = () =>
         {
             if (slotId == this.streamSlotIdInWhichIWantToStream)
@@ -2379,27 +2409,29 @@ export default defineComponent({
         };
 
         rtcPeer.open();
-        rtcPeer.conn!.addEventListener("icecandidateerror", (ev) => 
+        rtcPeer.conn!.addEventListener("icecandidateerror", (ev) =>
         {
             console.error("icecandidateerror", ev, ev.errorCode, ev.errorText, ev.address, ev.url, ev.port)
         })
-        
+
         rtcPeer.conn!.addEventListener("iceconnectionstatechange", (ev) =>
         {
             const state = rtcPeer.conn!.iceConnectionState;
             console.log("RTC Connection state", state)
             logToServer(new Date() + " " + this.myUserID + " RTC Connection state " + state)
-            
+
+            const slot = this.rtcPeerSlots[slotId]
+
             if (state == "connected")
             {
-                if (this.rtcPeerSlots[slotId])
-                    this.rtcPeerSlots[slotId].attempts = 0;
+                if (slot)
+                    slot.attempts = 0
             }
             else if (["failed", "disconnected", "closed"].includes(state))
             {
                 rtcPeer.close();
-                if (!this.rtcPeerSlots[slotId]) return;
-                if (this.rtcPeerSlots[slotId].attempts > 4)
+                if (!slot) return;
+                if (slot.attempts > 4)
                 {
                     terminate()
                 }
@@ -2407,22 +2439,23 @@ export default defineComponent({
                 {
                     setTimeout(reconnect,
                         Math.max(this.takenStreams[slotId] ? 1000 : 0,
-                            this.rtcPeerSlots[slotId].attempts * 1000));
+                            slot.attempts * 1000));
                 }
-                
-                this.rtcPeerSlots[slotId].attempts++;
+
+                slot.attempts++;
             }
         });
         return rtcPeer;
     },
-    
+
     updateCurrentRoomStreams: function (streams: StreamSlotDto[])
     {
         this.takenStreams = streams.map((s, slotId: number) => {
             return !!this.takenStreams[slotId]
         });
 
-        this.rtcPeerSlots = streams.map((s, slotId: number) => {
+        
+        const a = streams.map((s, slotId: number) => {
             if (!this.rtcPeerSlots[slotId])
                 return null
 
@@ -2435,24 +2468,22 @@ export default defineComponent({
             return null
         });
 
+        this.rtcPeerSlots = a
+
         this.streams = streams;
 
         this.streamSlotIdInWhichIWantToStream = null;
 
-        for (const slotId in streams)
+        for (let slotId = 0; slotId < streams.length; slotId++)
         {
             const stream = streams[slotId];
             if (stream.isActive)
             {
-                const title = stream.userId in this.users ?
-                    this.toDisplayName(this.users[stream.userId].name) : "";
-                Vue.set(stream, "title", title);
                 if (stream.userId == this.myUserID)
                 {
                     this.streamSlotIdInWhichIWantToStream = slotId;
                 }
             }
-            else Vue.set(stream, "title", "OFF");
             if (this.takenStreams[slotId])
             {
                 if (!stream.isActive || !stream.isReady)
@@ -2467,7 +2498,7 @@ export default defineComponent({
                 this.slotVolume[slotId] = 1
             if (this.slotCompression[slotId] === undefined)
                 this.slotCompression[slotId] = false
-            
+
             // Sadly it looks like there's no other way to set a default volume for the video,
             // since apparently <video> elements have no "volume" attribute and it must be set via javascript.
             // So, i use nextTick() to execute this piece of code only after the element has been added to the DOM.
@@ -2488,7 +2519,7 @@ export default defineComponent({
             const withSound = this.streamMode != "video";
             const withScreenCapture = this.streamScreenCapture && withVideo
             const withScreenCaptureAudio = this.streamScreenCaptureAudio && withScreenCapture && withSound
-            
+
             const audioConstraints = {
                 channelCount: 2,
                 echoCancellation: this.streamEchoCancellation,
@@ -2512,7 +2543,7 @@ export default defineComponent({
                         audio: !withSound ? undefined : audioConstraints
                     }
                 );
-            
+
             let screenMediaPromise: Promise<MediaStream> | null = null
             if (withScreenCapture)
                 screenMediaPromise = navigator.mediaDevices.getDisplayMedia(
@@ -2532,9 +2563,9 @@ export default defineComponent({
             {
                 // Close the devices that were successfully opened
                 if (screenMediaResults.status == "fulfilled" && screenMediaResults.value)
-                    for (const track of (await screenMediaResults.value).getTracks()) 
+                    for (const track of (await screenMediaResults.value).getTracks())
                         track.stop();
-                
+
                 throw userMediaResults.reason
             }
 
@@ -2542,9 +2573,9 @@ export default defineComponent({
             {
                 // Close the devices that were successfully opened
                 if (userMediaResults.status == "fulfilled" && userMediaResults.value)
-                    for (const track of (await userMediaResults.value).getTracks()) 
+                    for (const track of (await userMediaResults.value).getTracks())
                         track.stop();
-                
+
                 throw screenMediaResults.reason
             }
 
@@ -2554,13 +2585,13 @@ export default defineComponent({
 
             // Populate this.mediaStream
             if (!withScreenCapture)
-                this.mediaStream = userMedia
-            else 
+                this.mediaStream = userMedia!
+            else
             {
-                this.mediaStream = screenMedia
+                this.mediaStream = screenMedia!
                 if (withSound && !withScreenCaptureAudio)
                 {
-                    const audioTrack = userMedia.getAudioTracks()[0]
+                    const audioTrack = userMedia!.getAudioTracks()[0]
                     this.mediaStream.addTrack(audioTrack)
                 }
             }
@@ -2572,7 +2603,7 @@ export default defineComponent({
                 const H264 = await isWebrtcPublishCodecSupported(this.mediaStream, WebrtcCodec.H264);
                 const OPUS = await isWebrtcPublishCodecSupported(this.mediaStream, WebrtcCodec.OPUS);
                 const ISAC = await isWebrtcPublishCodecSupported(this.mediaStream, WebrtcCodec.ISAC);
-                
+
                 if (withVideo)
                     logToServer(this.myUserID + " PUBLISH VIDEO CODECS: VP8: " + VP8 + " VP9: " + VP9 + " H264: " + H264)
                 if (withSound)
@@ -2582,18 +2613,18 @@ export default defineComponent({
             {
                 console.error(exc)
             }
-            
+
             if (withVideo)
             {
                 if (!this.mediaStream.getVideoTracks().length)
                     throw new UserException("error_obtaining_video");
             }
-            
+
             if (withSound)
             {
                 if (!this.mediaStream.getAudioTracks().length)
                     throw new UserException("error_obtaining_audio");
-                
+
                 // VU Meter
                 if (window.AudioContext)
                 {
@@ -2616,12 +2647,12 @@ export default defineComponent({
                                 return
                             }
                             analyser.getByteFrequencyData(dataArrayAlt)
-                            
+
                             const max = dataArrayAlt.reduce((acc, val) => Math.max(acc, val))
                             const level = max / 255
                             const vuMeterBarPrimary = document.getElementById("vu-meter-bar-primary-" + this.streamSlotIdInWhichIWantToStream)!
                             const vuMeterBarSecondary = document.getElementById("vu-meter-bar-secondary-" + this.streamSlotIdInWhichIWantToStream)!
-                            
+
                             vuMeterBarSecondary.style.width = vuMeterBarPrimary.style.width
                             vuMeterBarPrimary.style.width = level * 100 + "%"
                         }
@@ -2653,17 +2684,17 @@ export default defineComponent({
 
             // On small screens, displaying the <video> element seems to cause a reflow in a way that
             // makes the canvas completely gray, so i force a redraw
-            this.isRedrawRequired = true; 
+            this.isRedrawRequired = true;
         } catch (e)
         {
             console.error(e, e.stack)
             if (e instanceof UserException)
             {
-                this.showWarningToast(i18n.t("msg." + e.message));
+                this.showWarningToast(this.$t("msg." + e.message));
             }
             else
             {
-                this.showWarningToast(i18n.t("msg.error_obtaining_media"));
+                this.showWarningToast(this.$t("msg.error_obtaining_media"));
             }
             this.wantToStream = false;
             this.mediaStream = null;
@@ -2672,7 +2703,7 @@ export default defineComponent({
     },
     setupRtcPeerSlot: function(slotId: number)
     {
-        if (!this.rtcPeerSlots[slotId]) 
+        if (!this.rtcPeerSlots[slotId])
             this.rtcPeerSlots[slotId] = {
                 attempts: 0,
                 rtcPeer: null,
@@ -2685,27 +2716,30 @@ export default defineComponent({
     {
         const slotId = this.streamSlotIdInWhichIWantToStream!;
         const rtcPeer = this.setupRtcPeerSlot(slotId)!.rtcPeer!;
-        
-        Vue.set(this.takenStreams, slotId, false);
+
+        this.takenStreams[slotId] = false;
         this.mediaStream!
             .getTracks()
             .forEach((track) =>
                 rtcPeer.conn!.addTrack(track, this.mediaStream!)
             );
-        
+
         const videoElement = document.getElementById("local-video-" + slotId) as HTMLVideoElement
         videoElement.srcObject = this.mediaStream;
     },
     stopStreaming: function ()
     {
-        for (const track of this.mediaStream.getTracks()) track.stop();
-        
+        if (this.mediaStream)
+            for (const track of this.mediaStream.getTracks())
+                track.stop();
+
         const streamSlotId = this.streamSlotIdInWhichIWantToStream!;
-        
-        document.getElementById("local-video-" + streamSlotId).srcObject = this.mediaStream = null;
+
+        const localVideoElement = document.getElementById("local-video-" + streamSlotId) as HTMLVideoElement
+        localVideoElement.srcObject = this.mediaStream = null;
         if (this.vuMeterTimer)
             clearInterval(this.vuMeterTimer)
-        
+
         this.streamSlotIdInWhichIWantToStream = null;
 
         const peerSlot = this.rtcPeerSlots[streamSlotId]
@@ -2714,23 +2748,23 @@ export default defineComponent({
             peerSlot.rtcPeer!.close()
             this.rtcPeerSlots[streamSlotId] = null;
         }
-        
+
         this.socket!.emit("user-want-to-stop-stream");
 
         // On small screens, displaying the <video> element seems to cause a reflow in a way that
         // makes the canvas completely gray, so i force a redraw
-        this.isRedrawRequired = true; 
+        this.isRedrawRequired = true;
     },
     wantToTakeStream: function (streamSlotId: number)
     {
         if (!window.RTCPeerConnection)
         {
-            this.showWarningToast(i18n.t("msg.no_webrtc"));
+            this.showWarningToast(this.$t("msg.no_webrtc"));
             return;
         }
-        
-        Vue.set(this.takenStreams, streamSlotId, true);
-        
+
+        this.takenStreams[streamSlotId] = true;
+
         if (streamSlotId in this.streams && this.streams[streamSlotId].isReady)
             this.takeStream(streamSlotId);
     },
@@ -2744,7 +2778,7 @@ export default defineComponent({
             "track",
             (event) =>
             {
-                try 
+                try
                 {
                     const stream = event.streams[0]
 
@@ -2754,11 +2788,11 @@ export default defineComponent({
 
                     if (this.audioProcessors[streamSlotId])
                         this.audioProcessors[streamSlotId].dispose()
-                    
+
                     if (this.streams[streamSlotId].withSound)
                     {
                         this.audioProcessors[streamSlotId] = new AudioProcessor(stream, videoElement, this.slotVolume[streamSlotId])
-                        
+
                         if (this.slotCompression[streamSlotId])
                             this.audioProcessors[streamSlotId].enableCompression()
                     }
@@ -2772,18 +2806,19 @@ export default defineComponent({
         );
         this.socket!.emit("user-want-to-take-stream", streamSlotId);
     },
-    dropStream: function (streamSlotId)
+    dropStream: function (streamSlotId: number)
     {
         if(!this.rtcPeerSlots[streamSlotId]) return;
-        this.rtcPeerSlots[streamSlotId].rtcPeer.close()
+
+        this.rtcPeerSlots[streamSlotId]?.rtcPeer?.close()
         this.rtcPeerSlots[streamSlotId] = null;
     },
-    wantToDropStream: function (streamSlotId)
+    wantToDropStream: function (streamSlotId: number)
     {
-        Vue.set(this.takenStreams, streamSlotId, false);
+        this.takenStreams[streamSlotId] = false;
         this.dropStream(streamSlotId);
     },
-    rula: function (roomId)
+    rula: function (roomId: string | null)
     {
         if (!roomId) return;
         this.canvasManualOffset = { x: 0, y: 0 };
@@ -2800,7 +2835,7 @@ export default defineComponent({
     {
         if (this.getUserListForListPopup().length == 0)
         {
-            this.showWarningToast(i18n.t("msg.no_other_users_in_this_room"));
+            this.showWarningToast(this.$t("msg.no_other_users_in_this_room"));
         }
         else
         {
@@ -2826,53 +2861,51 @@ export default defineComponent({
     {
         this.isPreferencesPopupOpen = false;
     },
-    ignoreUser: function(userId)
+    ignoreUser: function(userId: string)
     {
         this.ignoredUserIds.add(userId)
         this.isRedrawRequired = true
         this.$forceUpdate() // HACK: the v-if for the ignore and unignore buttons doesn't get automatically re-evaluated
     },
-    unignoreUser: function(userId)
+    unignoreUser: function(userId: string)
     {
         this.ignoredUserIds.delete(userId)
         this.isRedrawRequired = true
         this.$forceUpdate() // HACK: the v-if for the ignore and unignore buttons doesn't get automatically re-evaluated
     },
-    blockUser: function(userId)
+    blockUser: function(userId: string)
     {
-        if (confirm(i18n.t("msg.are_you_sure_you_want_to_block")))
+        if (confirm(this.$t("msg.are_you_sure_you_want_to_block")))
         {
             this.socket!.emit("user-block", userId);
         }
     },
-    sortRoomList: function (key, direction)
+    sortRoomList: function (key: "sortName" | "userCount" | "streamerCount", direction: number)
     {
         if (!direction)
             direction = this.lastRoomListSortDirection == 1 ? -1 : 1
-        
+
         this.roomList.sort((a, b) =>
         {
             let sort;
             if (key == "sortName")
                 sort = a[key].localeCompare(b[key]);
-            else if(key == "streamers")
-                sort = b[key].length - a[key].length;
             else
                 sort = b[key] - a[key];
             return sort * direction;
         })
 
         localStorage.setItem("lastRoomListSortKey", this.lastRoomListSortKey = key)
-        localStorage.setItem("lastRoomListSortDirection", this.lastRoomListSortDirection = direction)
+        localStorage.setItem("lastRoomListSortDirection", String(this.lastRoomListSortDirection = direction))
     },
-    openStreamPopup: function (streamSlotId)
+    openStreamPopup: function (streamSlotId: number)
     {
         if (!window.RTCPeerConnection)
         {
-            this.showWarningToast(i18n.t("msg.no_webrtc"));
+            this.showWarningToast(this.$t("msg.no_webrtc"));
             return;
         }
-        
+
         this.streamSlotIdInWhichIWantToStream = streamSlotId;
         this.wantToStream = true;
 
@@ -2888,7 +2921,7 @@ export default defineComponent({
     closeStreamPopup: function ()
     {
         if (!this.isStreamPopupOpen)
-            return 
+            return
 
         this.isStreamPopupOpen = false;
         this.wantToStream = false;
@@ -2898,7 +2931,7 @@ export default defineComponent({
     {
         const volumeSlider = document.getElementById("volume-" + streamSlotId) as HTMLInputElement;
 
-        this.audioProcessors[streamSlotId].setVolume(volumeSlider.value)
+        this.audioProcessors[streamSlotId].setVolume(Number(volumeSlider.value))
 
         this.slotVolume[streamSlotId] = volumeSlider.value;
         localStorage.setItem("slotVolume", JSON.stringify(this.slotVolume))
@@ -2909,14 +2942,15 @@ export default defineComponent({
         this.soundEffectVolume = newVolume
 
         this.updateAudioElementsVolume()
-        document.getElementById("message-sound")!.play()
-        localStorage.setItem(this.areaId + "soundEffectVolume", this.soundEffectVolume);
+        const messageSoundElement = document.getElementById("message-sound") as HTMLAudioElement
+        messageSoundElement.play()
+        localStorage.setItem(this.areaId + "soundEffectVolume", String(this.soundEffectVolume));
     },
     updateAudioElementsVolume: function ()
     {
         for (const elementId of ["message-sound", "login-sound", "mention-sound"])
         {
-            const el = document.getElementById(elementId)
+            const el = document.getElementById(elementId) as HTMLAudioElement
             el.volume = this.soundEffectVolume
         }
     },
@@ -2939,7 +2973,7 @@ export default defineComponent({
         const chatLog = document.getElementById("chatLog") as HTMLDivElement
 
         const lastChild = chatLog.lastChild as HTMLElement
-        
+
         if(lastChild && window.ResizeObserver)
         {
             const observer = new ResizeObserver((mutationsList, observer) =>
@@ -2961,9 +2995,9 @@ export default defineComponent({
         this.storeSet("bubbleOpacity");
         this.resetBubbleImages();
     },
-    logout: function () 
+    logout: function ()
     {
-        if (confirm(i18n.t("msg.are_you_sure_you_want_to_logout")))
+        if (confirm(this.$t("msg.are_you_sure_you_want_to_logout")))
         {
             // TODO stop all streams (both sending and receiving)
             if (this.socket)
@@ -2993,7 +3027,7 @@ export default defineComponent({
             this.customMentionSoundPattern.trim();
         const match = this.customMentionSoundPattern
             .match(/^\/(.*)\/([a-z]*)$/);
-        
+
         const re_object = match
             ? new RegExp(match[1], match[2])
             : null;
@@ -3001,7 +3035,7 @@ export default defineComponent({
             ? []
             : this.customMentionSoundPattern.split(',')
                 .map(word => word.trim().toLowerCase()).filter(word => word);
-        
+
         this.mentionSoundFunction = (msg: string): boolean =>
         {
             if (re_object)
@@ -3016,9 +3050,9 @@ export default defineComponent({
                 const name = this.toDisplayName(this.users[this.myUserID!].name).trim().toLowerCase();
                 if (name.split("◆").some((word: string) => lmsg.includes(word))) return true;
             }
-            
+
             return words.some(word => lmsg.includes(word));
-        }; 
+        };
     },
     handleLowQualityEnabled: function ()
     {
@@ -3040,14 +3074,14 @@ export default defineComponent({
         this.storeSet('customMentionSoundPattern');
         this.setMentionSoundFunction();
     },
-    handleEnableTextToSpeech: function () 
+    handleEnableTextToSpeech: function ()
     {
         if (window.speechSynthesis)
             speechSynthesis.cancel()
         this.storeSet('enableTextToSpeech')
     },
     changeVoice: function () {
-        speak(i18n.t("test"), this.ttsVoiceURI, this.voiceVolume)
+        speak(this.$t("test"), this.ttsVoiceURI, this.voiceVolume)
         this.storeSet('ttsVoiceURI')
     },
     // I think this getVoices() function isn't called anywhere, might be okay to remove
@@ -3079,7 +3113,7 @@ export default defineComponent({
             videoContainer.style.left = ""
         }
     },
-    highlightUser: function(userId: string, userName: string)
+    highlightUser: function(userId: string | null, userName: string)
     {
         if (this.highlightedUserId == userId)
         {
@@ -3113,7 +3147,7 @@ export default defineComponent({
         // Add highlighted users that are not in the room anymore
         if (this.highlightedUserId && !this.users[this.highlightedUserId])
             output.unshift({
-                id: this.highlightedUserId, 
+                id: this.highlightedUserId,
                 name: this.highlightedUserName,
                 isInRoom: false,
                 isInactive: false,
@@ -3145,7 +3179,7 @@ export default defineComponent({
                 break;
         }
     },
-    handlechatLogKeydown: function(ev) {
+    handlechatLogKeydown: function(ev: KeyboardEvent) {
         // hitting ctrl+a when the log is focused selects only the text in the log
         if (ev.code == "KeyA" && ev.ctrlKey)
         {
@@ -3175,7 +3209,7 @@ const debouncedSpeakTest = debounceWithDelayedExecution((ttsVoiceURI: string, vo
     if (window.speechSynthesis)
     {
         speechSynthesis.cancel()
-        speak(i18n.t("test"), ttsVoiceURI, voiceVolume)
+        speak(i18n.global.t("test"), ttsVoiceURI, voiceVolume)
     }
 }, 150)
 
@@ -3186,7 +3220,7 @@ const debouncedLogSoundVolume = debounceWithDelayedExecution((myUserID: string, 
 </script>
 
 <style lang="scss">
-#app {
-  
-}
+// #app {
+
+// }
 </style>

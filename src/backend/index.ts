@@ -1,6 +1,6 @@
 import express from "express"
 import { defaultRoom, rooms } from "./rooms";
-import { Direction, RoomState, RoomStateDto, JanusServer, LoginResponseDto, PlayerDto, StreamSlotDto, StreamSlot, PersistedState, CharacterSvgDto, RoomStateCollection, ChessboardStateDto } from "./types";
+import { Direction, RoomState, RoomStateDto, JanusServer, LoginResponseDto, PlayerDto, StreamSlotDto, StreamSlot, PersistedState, CharacterSvgDto, RoomStateCollection, ChessboardStateDto, RoomListItemDto } from "./types";
 import { addNewUser, getConnectedUserList, getUsersByIp, getAllUsers, getLoginUser, getUser, Player, removeUser, createPlayerDto, getFilteredConnectedUserList, setUserAsActive, restoreUserState } from "./users";
 import { sleep } from "./utils";
 import got from "got";
@@ -644,7 +644,7 @@ io.on("connection", function (socket: any)
     {
         try
         {
-            const roomList: { id: string, userCount: number, streamers: string[] }[] =
+            const roomList: RoomListItemDto[] =
                 Object.values(rooms)
                 .filter(room => !room.secret)
                 .map(room => ({
@@ -891,22 +891,39 @@ function roomEmit(areaId: string, roomId: string, ...msg: any[])
         .forEach((u) => u.socketId && io.to(u.socketId).emit(...msg));
 }
 
-function toStreamSlotDtoArray(user: Player, streamSlots: StreamSlot[]): StreamSlotDto[]
+function toStreamSlotDtoArray(user: Player | null, streamSlots: StreamSlot[]): StreamSlotDto[]
 {
     return streamSlots.map((s) =>
     {
         const u = getUser(s.userId!);
-        const isInactive = !u
+
+        // If parameter "user" is null, it means that this method is called
+        // with the REST api before the websocket has been intialized.
+        // Since the browser will once again request the room state with the user-connect
+        // message, at this point we consider all streams invisible, to avoid potentially leaking
+        // info of blocked/blocking users.
+        const isInvisibleForThisUser = !u
+            || !user 
             || (u.id != user.id
                 && (user.blockedIps.includes(u.ip)
                 || u.blockedIps.includes(user.ip)));
-        return {
-            isActive: isInactive ? false : s.isActive,
-            isReady: isInactive ? false : s.isReady,
-            withSound: isInactive ? null : s.withSound,
-            withVideo: isInactive ? null : s.withVideo,
-            userId: isInactive ? null : s.userId,
-        }
+
+        if (s.isActive && !isInvisibleForThisUser)
+            return {
+                isActive: true,
+                isReady: s.isReady,
+                withSound: s.withSound!,
+                withVideo: s.withVideo!,
+                userId: s.userId!,
+            }
+        else
+            return {
+                isActive: false,
+                isReady: false,
+                withSound: false,
+                withVideo: false,
+                userId: null,
+            }
     })
 }
 
@@ -1072,10 +1089,12 @@ app.get("/areas/:areaId/rooms/:roomId", (req, res) =>
         const connectedUsers: PlayerDto[] = getConnectedUserList(roomId, areaId)
             .map(p => toPlayerDto(p, roomId, areaId))
 
+        const streams = toStreamSlotDtoArray(null, roomStates[areaId][roomId].streams)
+
         const dto: RoomStateDto = {
             currentRoom: rooms[roomId],
             connectedUsers,
-            streams: roomStates[areaId][roomId].streams,
+            streams: streams,
             chessboardState: buildChessboardStateDto(roomStates, areaId, roomId)
         }
 

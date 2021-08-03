@@ -35,6 +35,13 @@ export interface Door
     } | null;
 }
 
+export interface WorldSpawn
+{
+    x: number;
+    y: number;
+    direction: Direction | null;
+}
+
 export interface RoomObject
 {
     x: number;
@@ -47,13 +54,9 @@ export interface RoomObject
     }
     xOffset?: number;
     yOffset?: number;
-}
-
-export interface FrontendRoomObject extends RoomObject
-{
-    image: RenderCache,
-    physicalPositionX: number,
-    physicalPositionY: number,
+    image?: RenderCache, // for frontend use only
+    physicalPositionX?: number, // for frontend use only
+    physicalPositionY?: number, // for frontend use only
 }
 
 export interface Room
@@ -73,7 +76,7 @@ export interface Room
     blocked: Coordinates[];
     forbiddenMovements: { xFrom: number, yFrom: number, xTo: number, yTo: number }[],
     doors: { [doorId: string]: Door };
-    worldSpawns?: Door[];
+    worldSpawns?: WorldSpawn[];
     streamSlotCount: number;
     secret?: boolean;
     forcedAnonymous?: boolean;
@@ -192,4 +195,18 @@ export interface CharacterSvgDto
     backStanding: string
     backWalking1: string
     backWalking2: string
+}
+
+export interface RoomListItemDto
+{
+    id: string,
+    userCount: number,
+    streamers: string[]
+}
+
+export interface RoomListItem extends RoomListItemDto
+{
+    sortName: string,
+    streamerCount: number,
+    streamerDisplayNames: string[]
 }
