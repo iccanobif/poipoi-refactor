@@ -1,7 +1,6 @@
-import { loadImage } from "./utils.js"
-import { RenderCache } from "./rendercache.js";
-import { annualEvents } from "./annualevents.js";
-import { CharacterSvgDto } from "./backend/types.js";
+import { RenderCache } from "./rendercache";
+import { annualEvents } from "./annualevents";
+import { CharacterSvgDto } from "./backend/types";
 
 export class Character
 {

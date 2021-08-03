@@ -1,7 +1,7 @@
-import { calculateRealCoordinates, BLOCK_HEIGHT, BLOCK_WIDTH } from "./utils.js";
-import { RenderCache } from "./rendercache.js";
-import { Character, characters } from "./character.js";
-import { Direction, PlayerDto, Room } from "./backend/types.js";
+import { calculateRealCoordinates, BLOCK_HEIGHT, BLOCK_WIDTH } from "./utils";
+import { RenderCache } from "./rendercache";
+import { Character, characters } from "./character";
+import { Direction, PlayerDto, Room } from "./backend/types";
 
 const STEP_LENGTH = 8;
 

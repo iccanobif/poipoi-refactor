@@ -1,9 +1,9 @@
-import { kanaToRomajiMap, kanjiToKanaMap, katakanaToHiragana } from "./japanese-tools.js";
-import { urlRegex } from "./utils.js";
+import { kanaToRomajiMap, kanjiToKanaMap, katakanaToHiragana } from "./japanese-tools";
+import { urlRegex } from "./utils";
 
 const synth = new Animalese('animalese.wav', function () {  });
 
-function speakAnimalese(text, pitch, volume)
+function speakAnimalese(text: string, pitch: number, volume: number)
 {
     // replace every japanese character with a random roman letter
     // text = text

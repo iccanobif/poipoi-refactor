@@ -1,4 +1,4 @@
-export function katakanaToHiragana(str)
+export function katakanaToHiragana(str: string)
 {
   // In unicode, katakana is from 12449 to 12533, hiragana from 12353, 12435
 
@@ -24,7 +24,6 @@ export const kanaToRomajiMap = {
   つ: "tsu",
   づ: "zu",
   か: "ka",
-  き: "ki",
   く: "ku",
   け: "ke",
   こ: "ko",
@@ -34,7 +33,6 @@ export const kanaToRomajiMap = {
   せ: "se",
   そ: "so",
   た: "ta",
-  ち: "ti",
   て: "te",
   と: "to",
   な: "na",
@@ -44,7 +42,6 @@ export const kanaToRomajiMap = {
   の: "no",
   は: "ha",
   ひ: "hi",
-  ふ: "hu",
   ふ: "fu",
   へ: "he",
   ほ: "ho",
@@ -77,7 +74,6 @@ export const kanaToRomajiMap = {
   ぞ: "zo",
   だ: "da",
   ぢ: "ji",
-  づ: "du",
   で: "de",
   ど: "do",
   ば: "ba",
@@ -90,7 +86,6 @@ export const kanaToRomajiMap = {
   ぷ: "pu",
   ぺ: "pe",
   ぽ: "po",
-  ん: "nn",
   ん: "n",
   あ: "a",
   い: "i",
